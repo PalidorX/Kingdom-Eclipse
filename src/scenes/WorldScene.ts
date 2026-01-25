@@ -74,6 +74,10 @@ export class WorldScene extends Phaser.Scene {
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
+  private isRealMapView: boolean = false;
+  private realMapElement: HTMLIFrameElement | null = null;
+  private mapToggleBtn!: Phaser.GameObjects.Text;
+  private mapToggleBg!: Phaser.GameObjects.Graphics;
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -88,6 +92,8 @@ export class WorldScene extends Phaser.Scene {
     this.createPlayerMarker();
     this.createResourceMarkers();
     this.createUI();
+    this.createMapToggle();
+    this.createRealMapOverlay();
     this.createDebugUI();
     this.initGeolocation();
 
@@ -577,6 +583,111 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
+  private createMapToggle(): void {
+    // Map view toggle button (top right, below debug)
+    this.mapToggleBg = this.add.graphics();
+    this.mapToggleBg.fillStyle(0x206020, 1);
+    this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+    this.mapToggleBg.lineStyle(1, 0x40a040, 1);
+    this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+    this.mapToggleBg.setDepth(250);
+
+    this.mapToggleBtn = this.add.text(GAME_WIDTH - 52, 46, 'REAL MAP', {
+      fontSize: '10px',
+      color: '#80ff80',
+      fontStyle: 'bold',
+      fontFamily: 'monospace',
+    });
+    this.mapToggleBtn.setOrigin(0.5);
+    this.mapToggleBtn.setDepth(251);
+
+    this.mapToggleBg.setInteractive(
+      new Phaser.Geom.Rectangle(GAME_WIDTH - 95, 35, 85, 22),
+      Phaser.Geom.Rectangle.Contains
+    );
+    this.mapToggleBg.on('pointerdown', () => this.toggleMapView());
+    this.mapToggleBg.on('pointerover', () => this.mapToggleBtn.setColor('#ffff80'));
+    this.mapToggleBg.on('pointerout', () => this.mapToggleBtn.setColor('#80ff80'));
+  }
+
+  private createRealMapOverlay(): void {
+    // Create iframe for OpenStreetMap
+    const iframe = document.createElement('iframe');
+    iframe.id = 'real-map-overlay';
+    iframe.style.position = 'absolute';
+    iframe.style.top = '60px';
+    iframe.style.left = '0';
+    iframe.style.width = `${GAME_WIDTH}px`;
+    iframe.style.height = `${GAME_HEIGHT - 130}px`;
+    iframe.style.border = 'none';
+    iframe.style.display = 'none';
+    iframe.style.zIndex = '50';
+    iframe.style.pointerEvents = 'none';
+    iframe.setAttribute('loading', 'lazy');
+
+    this.updateRealMapUrl(iframe);
+
+    // Add to game container
+    const gameContainer = document.getElementById('game-container') || document.body;
+    gameContainer.appendChild(iframe);
+    this.realMapElement = iframe;
+  }
+
+  private updateRealMapUrl(iframe?: HTMLIFrameElement): void {
+    const el = iframe || this.realMapElement;
+    if (!el) return;
+
+    const lat = this.currentPosition.latitude;
+    const lon = this.currentPosition.longitude;
+    const zoom = 18; // Street level zoom
+
+    // OpenStreetMap embed URL
+    const bbox = this.calculateBbox(lat, lon, zoom);
+    el.src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
+  }
+
+  private calculateBbox(lat: number, lon: number, zoom: number): string {
+    // Calculate bounding box for the map view
+    // At zoom 18, roughly 0.002 degrees covers a small area
+    const delta = 0.003 / Math.pow(2, zoom - 16);
+    const west = lon - delta;
+    const east = lon + delta;
+    const south = lat - delta * 0.7; // Account for aspect ratio
+    const north = lat + delta * 0.7;
+    return `${west},${south},${east},${north}`;
+  }
+
+  private toggleMapView(): void {
+    this.isRealMapView = !this.isRealMapView;
+
+    if (this.isRealMapView) {
+      // Show real map
+      if (this.realMapElement) {
+        this.updateRealMapUrl();
+        this.realMapElement.style.display = 'block';
+      }
+      this.mapContainer.setVisible(false);
+      this.mapToggleBtn.setText('RPG MAP');
+      this.mapToggleBg.clear();
+      this.mapToggleBg.fillStyle(0x4060a0, 1);
+      this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+      this.mapToggleBg.lineStyle(1, 0x80a0e0, 1);
+      this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+    } else {
+      // Show RPG map
+      if (this.realMapElement) {
+        this.realMapElement.style.display = 'none';
+      }
+      this.mapContainer.setVisible(true);
+      this.mapToggleBtn.setText('REAL MAP');
+      this.mapToggleBg.clear();
+      this.mapToggleBg.fillStyle(0x206020, 1);
+      this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+      this.mapToggleBg.lineStyle(1, 0x40a040, 1);
+      this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
+    }
+  }
+
   private createDebugUI(): void {
     const debugToggle = this.add.text(GAME_WIDTH - 10, 10, '[DBG]', {
       fontSize: '10px',
@@ -690,6 +801,9 @@ export class WorldScene extends Phaser.Scene {
   private regenerateMap(): void {
     this.generateTerrainGrid();
     this.drawMap();
+    if (this.isRealMapView) {
+      this.updateRealMapUrl();
+    }
   }
 
   private toggleDebugMode(): void {
@@ -751,6 +865,9 @@ export class WorldScene extends Phaser.Scene {
     if (Math.abs(oldLat - this.currentPosition.latitude) > 0.0001 ||
         Math.abs(oldLon - this.currentPosition.longitude) > 0.0001) {
       this.regenerateMap();
+      if (this.isRealMapView) {
+        this.updateRealMapUrl();
+      }
     }
   }
 
@@ -838,6 +955,11 @@ export class WorldScene extends Phaser.Scene {
   shutdown(): void {
     if (this.watchId !== null) {
       navigator.geolocation.clearWatch(this.watchId);
+    }
+    // Clean up real map iframe
+    if (this.realMapElement) {
+      this.realMapElement.remove();
+      this.realMapElement = null;
     }
   }
 }
