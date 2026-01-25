@@ -46,10 +46,14 @@ const PALETTE = {
   sandDark: 0xc0a060,
 };
 
-// Tile size for the SNES-style map
-const MAP_TILE_SIZE = 16;
+// Tile size for the SNES-style map - larger tiles for zoomed in street view
+const MAP_TILE_SIZE = 32;
 const TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
 const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
+
+// Zoom level - higher = more zoomed in (street level)
+// Each tile represents roughly 5-10 meters at this scale
+const COORD_SCALE = 50000;
 
 type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand';
 
@@ -112,48 +116,67 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private getTerrainAt(tileX: number, tileY: number): TerrainType {
-    // Use GPS position as seed for procedural generation
-    const worldX = this.currentPosition.longitude * 1000 + tileX;
-    const worldY = this.currentPosition.latitude * 1000 + tileY;
+    // Use GPS position as seed - high scale for street-level detail
+    const worldX = this.currentPosition.longitude * COORD_SCALE + tileX;
+    const worldY = this.currentPosition.latitude * COORD_SCALE + tileY;
 
-    // Simple noise-like function for terrain generation
+    // Multiple noise layers for varied terrain
     const noise = this.pseudoNoise(worldX, worldY);
-    const noise2 = this.pseudoNoise(worldX * 2.5, worldY * 2.5);
+    const noise2 = this.pseudoNoise(worldX * 3.7, worldY * 3.7);
+    const roadNoise = this.pseudoNoise(worldX * 0.5, worldY * 0.5);
 
-    // Distance from center affects terrain (player is always on land)
+    // Distance from center (player position)
     const centerX = TILES_X / 2;
     const centerY = TILES_Y / 2;
     const distFromCenter = Math.sqrt(Math.pow(tileX - centerX, 2) + Math.pow(tileY - centerY, 2));
-    const maxDist = Math.sqrt(Math.pow(TILES_X / 2, 2) + Math.pow(TILES_Y / 2, 2));
-    const normalizedDist = distFromCenter / maxDist;
 
-    // Ensure center area is always land
-    if (distFromCenter < 3) {
-      return noise2 > 0.6 ? 'path' : 'grass';
+    // Player's immediate area is always walkable
+    if (distFromCenter < 2) {
+      return 'grass';
     }
 
-    // Water at edges
-    if (normalizedDist > 0.85 && noise < 0.4) {
+    // Create street grid pattern - roads appear in a grid-like fashion
+    const gridX = Math.abs(worldX % 8);
+    const gridY = Math.abs(worldY % 8);
+    const isRoadX = gridX < 1.5 || gridX > 6.5;
+    const isRoadY = gridY < 1.5 || gridY > 6.5;
+
+    // Main roads (more common at street level)
+    if ((isRoadX || isRoadY) && roadNoise > 0.3) {
+      return 'path';
+    }
+
+    // Intersections become town/buildings
+    if (isRoadX && isRoadY && noise > 0.4) {
+      return 'town';
+    }
+
+    // Buildings/houses along roads
+    if ((gridX < 2.5 || gridX > 5.5 || gridY < 2.5 || gridY > 5.5) && noise > 0.6) {
+      return 'town';
+    }
+
+    // Parks and green spaces
+    if (noise < 0.25) {
+      return noise2 > 0.5 ? 'forest' : 'grass';
+    }
+
+    // Water features (ponds, streams) - rare at street level
+    if (noise > 0.92 && noise2 < 0.3) {
       return 'water';
     }
 
-    // Determine terrain based on noise
-    if (noise < 0.2) {
-      return normalizedDist > 0.6 ? 'water' : 'sand';
-    } else if (noise < 0.4) {
+    // Default urban grass/yards
+    if (noise < 0.5) {
       return 'grass';
-    } else if (noise < 0.55) {
-      return noise2 > 0.5 ? 'forest' : 'grass';
-    } else if (noise < 0.7) {
-      return 'forest';
-    } else if (noise < 0.8) {
-      return noise2 > 0.6 ? 'mountain' : 'forest';
-    } else if (noise < 0.9) {
-      return 'mountain';
-    } else {
-      // Towns are rare
+    }
+
+    // More buildings in urban areas
+    if (noise > 0.7) {
       return 'town';
     }
+
+    return 'grass';
   }
 
   private pseudoNoise(x: number, y: number): number {
@@ -209,137 +232,141 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private drawWaterTile(x: number, y: number, tileX: number, tileY: number): void {
-    // Animated water with wave pattern
+    const s = MAP_TILE_SIZE;
     const waveOffset = Math.floor(this.animationTime / 500) % 2;
     const isWave = ((tileX + tileY + waveOffset) % 2) === 0;
 
     this.mapGraphics.fillStyle(isWave ? PALETTE.waterDeep : PALETTE.waterShallow, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
-    // Add wave highlights
+    // Wave highlights
     if (isWave) {
       this.mapGraphics.fillStyle(PALETTE.waterShore, 0.5);
-      this.mapGraphics.fillRect(x + 4, y + 6, 8, 2);
+      this.mapGraphics.fillRect(x + s * 0.2, y + s * 0.4, s * 0.6, 3);
     }
   }
 
   private drawGrassTile(x: number, y: number, tileX: number, tileY: number): void {
-    // Base grass
+    const s = MAP_TILE_SIZE;
     const variation = this.pseudoNoise(tileX * 3, tileY * 3);
     this.mapGraphics.fillStyle(variation > 0.5 ? PALETTE.grass : PALETTE.grassLight, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
-    // Add grass tufts
-    if (variation > 0.7) {
+    // Grass details
+    if (variation > 0.6) {
       this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
-      this.mapGraphics.fillRect(x + 3, y + 10, 2, 4);
-      this.mapGraphics.fillRect(x + 10, y + 8, 2, 4);
+      this.mapGraphics.fillRect(x + s * 0.2, y + s * 0.6, 3, 5);
+      this.mapGraphics.fillRect(x + s * 0.6, y + s * 0.5, 3, 5);
     }
 
-    // Occasional flowers
-    if (variation > 0.9) {
+    // Flowers
+    if (variation > 0.85) {
       this.mapGraphics.fillStyle(0xff6080, 1);
-      this.mapGraphics.fillRect(x + 7, y + 5, 2, 2);
+      this.mapGraphics.fillCircle(x + s * 0.4, y + s * 0.3, 3);
+      this.mapGraphics.fillStyle(0xffff60, 1);
+      this.mapGraphics.fillCircle(x + s * 0.7, y + s * 0.7, 2);
     }
   }
 
   private drawForestTile(x: number, y: number, tileX: number, tileY: number): void {
-    // Forest floor
+    const s = MAP_TILE_SIZE;
+    // Park/yard grass
     this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
     const variation = this.pseudoNoise(tileX * 5, tileY * 5);
-
-    // Draw tree - classic SNES triangle tree
     const treeColor = variation > 0.5 ? PALETTE.tree : PALETTE.treeDark;
-    const trunkX = x + 6;
+    const cx = x + s / 2;
+    const cy = y + s / 2;
 
     // Tree trunk
     this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(trunkX + 1, y + 10, 2, 6);
+    this.mapGraphics.fillRect(cx - 2, cy + 4, 4, s / 3);
 
-    // Tree foliage (layered triangles like FF6)
+    // Tree foliage - rounder for street-level trees
     this.mapGraphics.fillStyle(treeColor, 1);
-    // Bottom layer
-    this.mapGraphics.fillTriangle(x + 7, y + 2, x + 2, y + 10, x + 12, y + 10);
-    // Top layer (lighter)
+    this.mapGraphics.fillCircle(cx, cy - 2, s / 3);
     this.mapGraphics.fillStyle(PALETTE.treeLight, 1);
-    this.mapGraphics.fillTriangle(x + 7, y + 0, x + 4, y + 6, x + 10, y + 6);
+    this.mapGraphics.fillCircle(cx - 3, cy - 5, s / 5);
   }
 
   private drawPathTile(x: number, y: number): void {
-    // Dirt path
+    const s = MAP_TILE_SIZE;
+    // Dirt path / road
     this.mapGraphics.fillStyle(PALETTE.path, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
-    // Add some texture
+    // Road markings / texture
     this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(x + 2, y + 4, 2, 2);
-    this.mapGraphics.fillRect(x + 10, y + 10, 3, 2);
+    this.mapGraphics.fillRect(x + s * 0.1, y + s * 0.2, s * 0.1, s * 0.1);
+    this.mapGraphics.fillRect(x + s * 0.6, y + s * 0.6, s * 0.15, s * 0.1);
 
     this.mapGraphics.fillStyle(PALETTE.pathLight, 1);
-    this.mapGraphics.fillRect(x + 6, y + 8, 2, 2);
+    this.mapGraphics.fillRect(x + s * 0.35, y + s * 0.45, s * 0.3, s * 0.1);
   }
 
   private drawMountainTile(x: number, y: number, tileX: number, tileY: number): void {
+    const s = MAP_TILE_SIZE;
     // Mountain base
     this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
     const height = this.pseudoNoise(tileX * 2, tileY * 2);
 
     // Mountain shape
     this.mapGraphics.fillStyle(PALETTE.rock, 1);
-    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 14, x + 15, y + 14);
+    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.88, x + s * 0.94, y + s * 0.88);
 
     // Shading on left side
     this.mapGraphics.fillStyle(PALETTE.rockDark, 1);
-    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 14, x + 8, y + 14);
+    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.88, x + s * 0.5, y + s * 0.88);
 
     // Snow cap on tall mountains
     if (height > 0.6) {
       this.mapGraphics.fillStyle(PALETTE.rockSnow, 1);
-      this.mapGraphics.fillTriangle(x + 8, y + 1, x + 5, y + 6, x + 11, y + 6);
+      this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.31, y + s * 0.38, x + s * 0.69, y + s * 0.38);
     }
   }
 
   private drawTownTile(x: number, y: number, tileX: number, tileY: number): void {
+    const s = MAP_TILE_SIZE;
     // Town ground
     this.mapGraphics.fillStyle(PALETTE.path, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
     const buildingType = this.pseudoNoise(tileX * 7, tileY * 7);
 
     // Building wall
     this.mapGraphics.fillStyle(PALETTE.wallLight, 1);
-    this.mapGraphics.fillRect(x + 2, y + 6, 12, 10);
+    this.mapGraphics.fillRect(x + s * 0.12, y + s * 0.38, s * 0.75, s * 0.56);
 
     // Roof
     const roofColor = buildingType > 0.5 ? PALETTE.roofRed : PALETTE.roofBlue;
     this.mapGraphics.fillStyle(roofColor, 1);
-    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 7, x + 15, y + 7);
+    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.44, x + s * 0.94, y + s * 0.44);
 
     // Door
     this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(x + 6, y + 10, 4, 6);
+    this.mapGraphics.fillRect(x + s * 0.38, y + s * 0.56, s * 0.25, s * 0.38);
 
     // Window
     this.mapGraphics.fillStyle(0x80c0ff, 1);
-    this.mapGraphics.fillRect(x + 4, y + 8, 2, 2);
-    this.mapGraphics.fillRect(x + 10, y + 8, 2, 2);
+    this.mapGraphics.fillRect(x + s * 0.18, y + s * 0.5, s * 0.15, s * 0.15);
+    this.mapGraphics.fillRect(x + s * 0.68, y + s * 0.5, s * 0.15, s * 0.15);
   }
 
   private drawSandTile(x: number, y: number, tileX: number, tileY: number): void {
+    const s = MAP_TILE_SIZE;
     // Sand base
     this.mapGraphics.fillStyle(PALETTE.sand, 1);
-    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+    this.mapGraphics.fillRect(x, y, s, s);
 
     // Sand texture
     const variation = this.pseudoNoise(tileX * 4, tileY * 4);
     if (variation > 0.6) {
       this.mapGraphics.fillStyle(PALETTE.sandDark, 1);
-      this.mapGraphics.fillRect(x + 3, y + 5, 3, 1);
-      this.mapGraphics.fillRect(x + 9, y + 11, 4, 1);
+      this.mapGraphics.fillRect(x + s * 0.1, y + s * 0.3, s * 0.2, s * 0.05);
+      this.mapGraphics.fillRect(x + s * 0.55, y + s * 0.7, s * 0.25, s * 0.05);
     }
   }
 
