@@ -78,6 +78,7 @@ export class WorldScene extends Phaser.Scene {
   private realMapElement: HTMLIFrameElement | null = null;
   private mapToggleBtn!: Phaser.GameObjects.Text;
   private mapToggleBg!: Phaser.GameObjects.Graphics;
+  private resizeHandler: (() => void) | null = null;
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -614,23 +615,46 @@ export class WorldScene extends Phaser.Scene {
     // Create iframe for OpenStreetMap
     const iframe = document.createElement('iframe');
     iframe.id = 'real-map-overlay';
-    iframe.style.position = 'absolute';
-    iframe.style.top = '60px';
-    iframe.style.left = '0';
-    iframe.style.width = `${GAME_WIDTH}px`;
-    iframe.style.height = `${GAME_HEIGHT - 130}px`;
+    iframe.style.position = 'fixed';
     iframe.style.border = 'none';
     iframe.style.display = 'none';
     iframe.style.zIndex = '50';
     iframe.style.pointerEvents = 'none';
     iframe.setAttribute('loading', 'lazy');
 
+    // Position iframe over the game canvas
+    this.positionRealMapOverlay(iframe);
+
     this.updateRealMapUrl(iframe);
 
-    // Add to game container
-    const gameContainer = document.getElementById('game-container') || document.body;
-    gameContainer.appendChild(iframe);
+    // Add to body for fixed positioning
+    document.body.appendChild(iframe);
     this.realMapElement = iframe;
+
+    // Reposition on window resize
+    this.resizeHandler = () => this.positionRealMapOverlay();
+    window.addEventListener('resize', this.resizeHandler);
+  }
+
+  private positionRealMapOverlay(iframe?: HTMLIFrameElement): void {
+    const el = iframe || this.realMapElement;
+    if (!el) return;
+
+    // Get the canvas element's position
+    const canvas = this.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+
+    // Calculate scale factor (canvas may be scaled to fit)
+    const scale = rect.height / GAME_HEIGHT;
+
+    // Position iframe to match game area (below header, above nav)
+    const headerHeight = 60 * scale;
+    const navHeight = 70 * scale;
+
+    el.style.left = `${rect.left}px`;
+    el.style.top = `${rect.top + headerHeight}px`;
+    el.style.width = `${rect.width}px`;
+    el.style.height = `${rect.height - headerHeight - navHeight}px`;
   }
 
   private updateRealMapUrl(iframe?: HTMLIFrameElement): void {
@@ -663,6 +687,7 @@ export class WorldScene extends Phaser.Scene {
     if (this.isRealMapView) {
       // Show real map
       if (this.realMapElement) {
+        this.positionRealMapOverlay();
         this.updateRealMapUrl();
         this.realMapElement.style.display = 'block';
       }
@@ -955,6 +980,11 @@ export class WorldScene extends Phaser.Scene {
   shutdown(): void {
     if (this.watchId !== null) {
       navigator.geolocation.clearWatch(this.watchId);
+    }
+    // Clean up resize listener
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      this.resizeHandler = null;
     }
     // Clean up real map iframe
     if (this.realMapElement) {
