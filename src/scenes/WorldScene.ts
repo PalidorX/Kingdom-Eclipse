@@ -201,7 +201,9 @@ export class WorldScene extends Phaser.Scene {
       }
 
       const data = await response.json();
+      console.log('OSM API response:', data.elements?.length || 0, 'elements');
       this.parseOSMData(data);
+      console.log('Parsed features:', this.osmFeatures.length);
       this.lastFetchPosition = {
         lat: this.currentPosition.latitude,
         lon: this.currentPosition.longitude,
@@ -269,23 +271,73 @@ export class WorldScene extends Phaser.Scene {
     for (const feature of this.osmFeatures) {
       const terrainType = this.osmTypeToTerrain(feature.type);
 
-      // Convert geometry to tile coordinates and fill
-      for (const point of feature.geometry) {
-        const tileX = Math.floor((point.lon - centerLon) / lonPerTile + TILES_X / 2);
-        const tileY = Math.floor((centerLat - point.lat) / latPerTile + TILES_Y / 2);
+      if (feature.type === 'road') {
+        // Roads are lines - draw thick lines between consecutive points
+        this.drawRoadLine(feature.geometry, centerLat, centerLon, latPerTile, lonPerTile);
+      } else {
+        // Fill polygon interiors for buildings, water, parks, forests
+        this.fillPolygon(feature.geometry, terrainType, centerLat, centerLon, latPerTile, lonPerTile);
+      }
+    }
 
-        if (tileX >= 0 && tileX < TILES_X && tileY >= 0 && tileY < TILES_Y) {
-          // Priority: water > road > building > forest > park > grass
-          const currentTerrain = this.terrainGrid[tileY][tileX];
-          if (this.getTerrainPriority(terrainType) > this.getTerrainPriority(currentTerrain)) {
-            this.terrainGrid[tileY][tileX] = terrainType;
+    console.log(`Rendered ${this.osmFeatures.length} OSM features`);
+  }
+
+  private drawRoadLine(
+    geometry: { lat: number; lon: number }[],
+    centerLat: number,
+    centerLon: number,
+    latPerTile: number,
+    lonPerTile: number
+  ): void {
+    // Convert to tile coordinates
+    const points = geometry.map(p => ({
+      x: Math.floor((p.lon - centerLon) / lonPerTile + TILES_X / 2),
+      y: Math.floor((centerLat - p.lat) / latPerTile + TILES_Y / 2),
+    }));
+
+    // Draw lines between consecutive points using Bresenham's algorithm
+    for (let i = 0; i < points.length - 1; i++) {
+      this.drawThickLine(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y, 'path');
+    }
+  }
+
+  private drawThickLine(x0: number, y0: number, x1: number, y1: number, terrain: TerrainType): void {
+    // Bresenham's line algorithm with thickness
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx - dy;
+
+    let x = x0;
+    let y = y0;
+
+    while (true) {
+      // Draw a 2x2 block for thickness
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const tx = x + ox;
+          const ty = y + oy;
+          if (tx >= 0 && tx < TILES_X && ty >= 0 && ty < TILES_Y) {
+            const currentTerrain = this.terrainGrid[ty][tx];
+            if (this.getTerrainPriority(terrain) >= this.getTerrainPriority(currentTerrain)) {
+              this.terrainGrid[ty][tx] = terrain;
+            }
           }
         }
       }
 
-      // Fill polygon interiors for buildings and water
-      if (feature.type === 'building' || feature.type === 'water' || feature.type === 'park' || feature.type === 'forest') {
-        this.fillPolygon(feature.geometry, terrainType, centerLat, centerLon, latPerTile, lonPerTile);
+      if (x === x1 && y === y1) break;
+
+      const e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y += sy;
       }
     }
   }
@@ -352,14 +404,16 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private getTerrainPriority(terrain: TerrainType): number {
+    // Priority determines what draws over what
+    // Higher priority = draws on top
     const priorities: Record<TerrainType, number> = {
       grass: 0,
       park: 1,
-      sand: 2,
-      forest: 3,
-      town: 4,
-      path: 5,
-      water: 6,
+      forest: 2,
+      sand: 3,
+      path: 4,      // Roads draw over grass/parks/forest
+      town: 5,      // Buildings draw over roads
+      water: 6,     // Water draws over everything
       mountain: 7,
     };
     return priorities[terrain];
