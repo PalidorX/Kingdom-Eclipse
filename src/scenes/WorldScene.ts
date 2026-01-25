@@ -7,6 +7,11 @@ interface GeoPosition {
   accuracy: number;
 }
 
+interface OSMFeature {
+  type: 'building' | 'road' | 'water' | 'forest' | 'park' | 'parking';
+  geometry: { lat: number; lon: number }[];
+}
+
 // SNES-style color palette (limited colors like classic JRPGs)
 const PALETTE = {
   // Water colors
@@ -25,9 +30,9 @@ const PALETTE = {
   treeLight: 0x408040,
 
   // Path/Road colors
-  pathDark: 0x806040,
-  path: 0xa08060,
-  pathLight: 0xc0a080,
+  pathDark: 0x606060,
+  path: 0x909090,
+  pathLight: 0xb0b0b0,
 
   // Mountain/Rock colors
   rockDark: 0x505050,
@@ -38,6 +43,7 @@ const PALETTE = {
   // Town/Building colors
   roofRed: 0xc04040,
   roofBlue: 0x4040c0,
+  roofBrown: 0x806040,
   wallLight: 0xe0d0c0,
   wallDark: 0xa09080,
 
@@ -46,16 +52,15 @@ const PALETTE = {
   sandDark: 0xc0a060,
 };
 
-// Tile size for the SNES-style map - larger tiles for zoomed in street view
-const MAP_TILE_SIZE = 32;
+// Tile size for the SNES-style map
+const MAP_TILE_SIZE = 16;
 const TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
 const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
 
-// Zoom level - higher = more zoomed in (street level)
-// Each tile represents roughly 5-10 meters at this scale
-const COORD_SCALE = 50000;
+// How many meters each tile represents (smaller = more zoomed in)
+const METERS_PER_TILE = 5;
 
-type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand';
+type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
 
 export class WorldScene extends Phaser.Scene {
   private playerMarker!: Phaser.GameObjects.Container;
@@ -79,6 +84,10 @@ export class WorldScene extends Phaser.Scene {
   private mapToggleBtn!: Phaser.GameObjects.Text;
   private mapToggleBg!: Phaser.GameObjects.Graphics;
   private resizeHandler: (() => void) | null = null;
+  private osmFeatures: OSMFeature[] = [];
+  private isLoadingOSM: boolean = false;
+  private lastFetchPosition: { lat: number; lon: number } | null = null;
+  private loadingText!: Phaser.GameObjects.Text;
 
   constructor() {
     super({ key: 'WorldScene' });
@@ -88,8 +97,10 @@ export class WorldScene extends Phaser.Scene {
     // Create map container for all map elements
     this.mapContainer = this.add.container(0, 0);
 
-    this.generateTerrainGrid();
+    // Initialize with grass
+    this.initializeTerrainGrid();
     this.createWorldMap();
+    this.createLoadingIndicator();
     this.createPlayerMarker();
     this.createResourceMarkers();
     this.createUI();
@@ -97,6 +108,9 @@ export class WorldScene extends Phaser.Scene {
     this.createRealMapOverlay();
     this.createDebugUI();
     this.initGeolocation();
+
+    // Fetch OSM data for initial position
+    this.fetchOSMData();
 
     // Start UIScene in parallel
     this.scene.launch('UIScene');
@@ -111,83 +125,281 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private generateTerrainGrid(): void {
-    this.terrainGrid = [];
+  private createLoadingIndicator(): void {
+    this.loadingText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 50, 'Loading map...', {
+      fontSize: '12px',
+      color: '#ffff80',
+      fontFamily: 'monospace',
+    });
+    this.loadingText.setOrigin(0.5);
+    this.loadingText.setDepth(150);
+    this.loadingText.setVisible(false);
+  }
 
+  private initializeTerrainGrid(): void {
+    this.terrainGrid = [];
     for (let y = 0; y < TILES_Y; y++) {
       this.terrainGrid[y] = [];
       for (let x = 0; x < TILES_X; x++) {
-        this.terrainGrid[y][x] = this.getTerrainAt(x, y);
+        this.terrainGrid[y][x] = 'grass';
       }
     }
   }
 
-  private getTerrainAt(tileX: number, tileY: number): TerrainType {
-    // Use GPS position as seed - high scale for street-level detail
-    const worldX = this.currentPosition.longitude * COORD_SCALE + tileX;
-    const worldY = this.currentPosition.latitude * COORD_SCALE + tileY;
+  private async fetchOSMData(): Promise<void> {
+    if (this.isLoadingOSM) return;
 
-    // Multiple noise layers for varied terrain
+    // Check if we've moved enough to warrant a new fetch
+    if (this.lastFetchPosition) {
+      const dist = this.haversineDistance(
+        this.lastFetchPosition.lat,
+        this.lastFetchPosition.lon,
+        this.currentPosition.latitude,
+        this.currentPosition.longitude
+      );
+      if (dist < 50) return; // Don't refetch if moved less than 50m
+    }
+
+    this.isLoadingOSM = true;
+    this.loadingText.setVisible(true);
+
+    try {
+      // Calculate bounding box (roughly 200m x 200m area)
+      const latDelta = (TILES_Y * METERS_PER_TILE) / 111000; // 111km per degree latitude
+      const lonDelta = (TILES_X * METERS_PER_TILE) / (111000 * Math.cos(this.currentPosition.latitude * Math.PI / 180));
+
+      const south = this.currentPosition.latitude - latDelta / 2;
+      const north = this.currentPosition.latitude + latDelta / 2;
+      const west = this.currentPosition.longitude - lonDelta / 2;
+      const east = this.currentPosition.longitude + lonDelta / 2;
+
+      // Overpass API query for buildings, roads, water, parks, forests
+      const query = `
+        [out:json][timeout:10];
+        (
+          way["building"](${south},${west},${north},${east});
+          way["highway"](${south},${west},${north},${east});
+          way["natural"="water"](${south},${west},${north},${east});
+          way["waterway"](${south},${west},${north},${east});
+          way["landuse"="forest"](${south},${west},${north},${east});
+          way["natural"="wood"](${south},${west},${north},${east});
+          way["leisure"="park"](${south},${west},${north},${east});
+          way["landuse"="grass"](${south},${west},${north},${east});
+          way["amenity"="parking"](${south},${west},${north},${east});
+          relation["natural"="water"](${south},${west},${north},${east});
+        );
+        out geom;
+      `;
+
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: query,
+      });
+
+      if (!response.ok) {
+        throw new Error('Overpass API request failed');
+      }
+
+      const data = await response.json();
+      this.parseOSMData(data);
+      this.lastFetchPosition = {
+        lat: this.currentPosition.latitude,
+        lon: this.currentPosition.longitude,
+      };
+
+      // Regenerate terrain from OSM data
+      this.generateTerrainFromOSM();
+      this.drawMap();
+    } catch (error) {
+      console.error('Failed to fetch OSM data:', error);
+      // Fall back to procedural generation
+      this.generateProceduralTerrain();
+      this.drawMap();
+    } finally {
+      this.isLoadingOSM = false;
+      this.loadingText.setVisible(false);
+    }
+  }
+
+  private parseOSMData(data: { elements: Array<{ type: string; tags?: Record<string, string>; geometry?: Array<{ lat: number; lon: number }> }> }): void {
+    this.osmFeatures = [];
+
+    for (const element of data.elements) {
+      if (!element.geometry) continue;
+
+      const tags = element.tags || {};
+      let featureType: OSMFeature['type'] | null = null;
+
+      if (tags.building) {
+        featureType = 'building';
+      } else if (tags.highway) {
+        featureType = 'road';
+      } else if (tags.natural === 'water' || tags.waterway) {
+        featureType = 'water';
+      } else if (tags.landuse === 'forest' || tags.natural === 'wood') {
+        featureType = 'forest';
+      } else if (tags.leisure === 'park' || tags.landuse === 'grass') {
+        featureType = 'park';
+      } else if (tags.amenity === 'parking') {
+        featureType = 'parking';
+      }
+
+      if (featureType) {
+        this.osmFeatures.push({
+          type: featureType,
+          geometry: element.geometry,
+        });
+      }
+    }
+  }
+
+  private generateTerrainFromOSM(): void {
+    // Reset to grass
+    this.initializeTerrainGrid();
+
+    // Convert GPS to tile coordinates
+    const centerLat = this.currentPosition.latitude;
+    const centerLon = this.currentPosition.longitude;
+
+    // Calculate degrees per tile
+    const latPerTile = METERS_PER_TILE / 111000;
+    const lonPerTile = METERS_PER_TILE / (111000 * Math.cos(centerLat * Math.PI / 180));
+
+    // Process each OSM feature
+    for (const feature of this.osmFeatures) {
+      const terrainType = this.osmTypeToTerrain(feature.type);
+
+      // Convert geometry to tile coordinates and fill
+      for (const point of feature.geometry) {
+        const tileX = Math.floor((point.lon - centerLon) / lonPerTile + TILES_X / 2);
+        const tileY = Math.floor((centerLat - point.lat) / latPerTile + TILES_Y / 2);
+
+        if (tileX >= 0 && tileX < TILES_X && tileY >= 0 && tileY < TILES_Y) {
+          // Priority: water > road > building > forest > park > grass
+          const currentTerrain = this.terrainGrid[tileY][tileX];
+          if (this.getTerrainPriority(terrainType) > this.getTerrainPriority(currentTerrain)) {
+            this.terrainGrid[tileY][tileX] = terrainType;
+          }
+        }
+      }
+
+      // Fill polygon interiors for buildings and water
+      if (feature.type === 'building' || feature.type === 'water' || feature.type === 'park' || feature.type === 'forest') {
+        this.fillPolygon(feature.geometry, terrainType, centerLat, centerLon, latPerTile, lonPerTile);
+      }
+    }
+  }
+
+  private fillPolygon(
+    geometry: { lat: number; lon: number }[],
+    terrainType: TerrainType,
+    centerLat: number,
+    centerLon: number,
+    latPerTile: number,
+    lonPerTile: number
+  ): void {
+    // Convert to tile coordinates
+    const points = geometry.map(p => ({
+      x: Math.floor((p.lon - centerLon) / lonPerTile + TILES_X / 2),
+      y: Math.floor((centerLat - p.lat) / latPerTile + TILES_Y / 2),
+    }));
+
+    // Find bounding box
+    let minX = TILES_X, maxX = 0, minY = TILES_Y, maxY = 0;
+    for (const p of points) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+
+    // Scanline fill
+    for (let y = Math.max(0, minY); y <= Math.min(TILES_Y - 1, maxY); y++) {
+      for (let x = Math.max(0, minX); x <= Math.min(TILES_X - 1, maxX); x++) {
+        if (this.pointInPolygon(x, y, points)) {
+          const currentTerrain = this.terrainGrid[y][x];
+          if (this.getTerrainPriority(terrainType) >= this.getTerrainPriority(currentTerrain)) {
+            this.terrainGrid[y][x] = terrainType;
+          }
+        }
+      }
+    }
+  }
+
+  private pointInPolygon(x: number, y: number, polygon: { x: number; y: number }[]): boolean {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  private osmTypeToTerrain(type: OSMFeature['type']): TerrainType {
+    switch (type) {
+      case 'building': return 'town';
+      case 'road': return 'path';
+      case 'water': return 'water';
+      case 'forest': return 'forest';
+      case 'park': return 'park';
+      case 'parking': return 'sand'; // Use sand color for parking lots
+      default: return 'grass';
+    }
+  }
+
+  private getTerrainPriority(terrain: TerrainType): number {
+    const priorities: Record<TerrainType, number> = {
+      grass: 0,
+      park: 1,
+      sand: 2,
+      forest: 3,
+      town: 4,
+      path: 5,
+      water: 6,
+      mountain: 7,
+    };
+    return priorities[terrain];
+  }
+
+  private haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000; // Earth radius in meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  private generateProceduralTerrain(): void {
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        this.terrainGrid[y][x] = this.getProceduralTerrainAt(x, y);
+      }
+    }
+  }
+
+  private getProceduralTerrainAt(tileX: number, tileY: number): TerrainType {
+    const worldX = this.currentPosition.longitude * 10000 + tileX;
+    const worldY = this.currentPosition.latitude * 10000 + tileY;
+
     const noise = this.pseudoNoise(worldX, worldY);
     const noise2 = this.pseudoNoise(worldX * 3.7, worldY * 3.7);
-    const roadNoise = this.pseudoNoise(worldX * 0.5, worldY * 0.5);
 
-    // Distance from center (player position)
-    const centerX = TILES_X / 2;
-    const centerY = TILES_Y / 2;
-    const distFromCenter = Math.sqrt(Math.pow(tileX - centerX, 2) + Math.pow(tileY - centerY, 2));
-
-    // Player's immediate area is always walkable
-    if (distFromCenter < 2) {
-      return 'grass';
-    }
-
-    // Create street grid pattern - roads appear in a grid-like fashion
-    const gridX = Math.abs(worldX % 8);
-    const gridY = Math.abs(worldY % 8);
-    const isRoadX = gridX < 1.5 || gridX > 6.5;
-    const isRoadY = gridY < 1.5 || gridY > 6.5;
-
-    // Main roads (more common at street level)
-    if ((isRoadX || isRoadY) && roadNoise > 0.3) {
-      return 'path';
-    }
-
-    // Intersections become town/buildings
-    if (isRoadX && isRoadY && noise > 0.4) {
-      return 'town';
-    }
-
-    // Buildings/houses along roads
-    if ((gridX < 2.5 || gridX > 5.5 || gridY < 2.5 || gridY > 5.5) && noise > 0.6) {
-      return 'town';
-    }
-
-    // Parks and green spaces
-    if (noise < 0.25) {
-      return noise2 > 0.5 ? 'forest' : 'grass';
-    }
-
-    // Water features (ponds, streams) - rare at street level
-    if (noise > 0.92 && noise2 < 0.3) {
-      return 'water';
-    }
-
-    // Default urban grass/yards
-    if (noise < 0.5) {
-      return 'grass';
-    }
-
-    // More buildings in urban areas
-    if (noise > 0.7) {
-      return 'town';
-    }
-
+    // Simple procedural fallback
+    if (noise > 0.85) return 'water';
+    if (noise > 0.7) return 'forest';
+    if (noise > 0.5 && noise2 > 0.5) return 'town';
+    if (noise < 0.3) return 'path';
     return 'grass';
   }
 
   private pseudoNoise(x: number, y: number): number {
-    // Simple pseudo-random noise function
     const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
     return n - Math.floor(n);
   }
@@ -224,7 +436,7 @@ export class WorldScene extends Phaser.Scene {
         this.drawForestTile(x, y, tileX, tileY);
         break;
       case 'path':
-        this.drawPathTile(x, y);
+        this.drawPathTile(x, y, tileX, tileY);
         break;
       case 'mountain':
         this.drawMountainTile(x, y, tileX, tileY);
@@ -234,6 +446,9 @@ export class WorldScene extends Phaser.Scene {
         break;
       case 'sand':
         this.drawSandTile(x, y, tileX, tileY);
+        break;
+      case 'park':
+        this.drawParkTile(x, y, tileX, tileY);
         break;
     }
   }
@@ -248,8 +463,8 @@ export class WorldScene extends Phaser.Scene {
 
     // Wave highlights
     if (isWave) {
-      this.mapGraphics.fillStyle(PALETTE.waterShore, 0.5);
-      this.mapGraphics.fillRect(x + s * 0.2, y + s * 0.4, s * 0.6, 3);
+      this.mapGraphics.fillStyle(PALETTE.waterShore, 0.6);
+      this.mapGraphics.fillRect(x + 2, y + s / 2 - 1, s - 4, 2);
     }
   }
 
@@ -260,61 +475,88 @@ export class WorldScene extends Phaser.Scene {
     this.mapGraphics.fillRect(x, y, s, s);
 
     // Grass details
-    if (variation > 0.6) {
+    if (variation > 0.7) {
       this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
-      this.mapGraphics.fillRect(x + s * 0.2, y + s * 0.6, 3, 5);
-      this.mapGraphics.fillRect(x + s * 0.6, y + s * 0.5, 3, 5);
+      this.mapGraphics.fillRect(x + 3, y + 10, 2, 4);
+      this.mapGraphics.fillRect(x + 10, y + 5, 2, 4);
+    }
+  }
+
+  private drawParkTile(x: number, y: number, tileX: number, tileY: number): void {
+    const s = MAP_TILE_SIZE;
+    // Lighter green for parks
+    this.mapGraphics.fillStyle(PALETTE.grassLight, 1);
+    this.mapGraphics.fillRect(x, y, s, s);
+
+    const variation = this.pseudoNoise(tileX * 5, tileY * 5);
+
+    // Occasional flowers
+    if (variation > 0.7) {
+      this.mapGraphics.fillStyle(0xff6080, 1);
+      this.mapGraphics.fillCircle(x + 5, y + 5, 2);
+      this.mapGraphics.fillStyle(0xffff60, 1);
+      this.mapGraphics.fillCircle(x + 11, y + 10, 2);
     }
 
-    // Flowers
+    // Occasional small tree
     if (variation > 0.85) {
-      this.mapGraphics.fillStyle(0xff6080, 1);
-      this.mapGraphics.fillCircle(x + s * 0.4, y + s * 0.3, 3);
-      this.mapGraphics.fillStyle(0xffff60, 1);
-      this.mapGraphics.fillCircle(x + s * 0.7, y + s * 0.7, 2);
+      this.mapGraphics.fillStyle(PALETTE.tree, 1);
+      this.mapGraphics.fillCircle(x + s / 2, y + s / 2, 4);
     }
   }
 
   private drawForestTile(x: number, y: number, tileX: number, tileY: number): void {
     const s = MAP_TILE_SIZE;
-    // Park/yard grass
+    // Dark grass background
     this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
     this.mapGraphics.fillRect(x, y, s, s);
 
     const variation = this.pseudoNoise(tileX * 5, tileY * 5);
     const treeColor = variation > 0.5 ? PALETTE.tree : PALETTE.treeDark;
-    const cx = x + s / 2;
-    const cy = y + s / 2;
 
-    // Tree trunk
-    this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(cx - 2, cy + 4, 4, s / 3);
-
-    // Tree foliage - rounder for street-level trees
+    // Tree top (circular)
     this.mapGraphics.fillStyle(treeColor, 1);
-    this.mapGraphics.fillCircle(cx, cy - 2, s / 3);
+    this.mapGraphics.fillCircle(x + s / 2, y + s / 2 - 2, s / 2 - 2);
+
+    // Highlight
     this.mapGraphics.fillStyle(PALETTE.treeLight, 1);
-    this.mapGraphics.fillCircle(cx - 3, cy - 5, s / 5);
+    this.mapGraphics.fillCircle(x + s / 2 - 2, y + s / 2 - 4, 3);
   }
 
-  private drawPathTile(x: number, y: number): void {
+  private drawPathTile(x: number, y: number, tileX: number, tileY: number): void {
     const s = MAP_TILE_SIZE;
-    // Dirt path / road
+
+    // Check neighbors to determine road connections
+    const hasN = tileY > 0 && this.terrainGrid[tileY - 1]?.[tileX] === 'path';
+    const hasS = tileY < TILES_Y - 1 && this.terrainGrid[tileY + 1]?.[tileX] === 'path';
+    const hasE = tileX < TILES_X - 1 && this.terrainGrid[tileY]?.[tileX + 1] === 'path';
+    const hasW = tileX > 0 && this.terrainGrid[tileY]?.[tileX - 1] === 'path';
+
+    // Base road color
     this.mapGraphics.fillStyle(PALETTE.path, 1);
     this.mapGraphics.fillRect(x, y, s, s);
 
-    // Road markings / texture
+    // Road edges (darker)
     this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(x + s * 0.1, y + s * 0.2, s * 0.1, s * 0.1);
-    this.mapGraphics.fillRect(x + s * 0.6, y + s * 0.6, s * 0.15, s * 0.1);
 
-    this.mapGraphics.fillStyle(PALETTE.pathLight, 1);
-    this.mapGraphics.fillRect(x + s * 0.35, y + s * 0.45, s * 0.3, s * 0.1);
+    if (!hasN) this.mapGraphics.fillRect(x, y, s, 2);
+    if (!hasS) this.mapGraphics.fillRect(x, y + s - 2, s, 2);
+    if (!hasE) this.mapGraphics.fillRect(x + s - 2, y, 2, s);
+    if (!hasW) this.mapGraphics.fillRect(x, y, 2, s);
+
+    // Center line for straight roads
+    if ((hasN && hasS && !hasE && !hasW) || (!hasN && !hasS && hasE && hasW)) {
+      this.mapGraphics.fillStyle(PALETTE.pathLight, 1);
+      if (hasN && hasS) {
+        this.mapGraphics.fillRect(x + s / 2 - 1, y + 2, 2, s - 4);
+      } else {
+        this.mapGraphics.fillRect(x + 2, y + s / 2 - 1, s - 4, 2);
+      }
+    }
   }
 
   private drawMountainTile(x: number, y: number, tileX: number, tileY: number): void {
     const s = MAP_TILE_SIZE;
-    // Mountain base
     this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
     this.mapGraphics.fillRect(x, y, s, s);
 
@@ -322,63 +564,64 @@ export class WorldScene extends Phaser.Scene {
 
     // Mountain shape
     this.mapGraphics.fillStyle(PALETTE.rock, 1);
-    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.88, x + s * 0.94, y + s * 0.88);
+    this.mapGraphics.fillTriangle(x + s / 2, y + 1, x + 1, y + s - 2, x + s - 1, y + s - 2);
 
-    // Shading on left side
+    // Shading
     this.mapGraphics.fillStyle(PALETTE.rockDark, 1);
-    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.88, x + s * 0.5, y + s * 0.88);
+    this.mapGraphics.fillTriangle(x + s / 2, y + 1, x + 1, y + s - 2, x + s / 2, y + s - 2);
 
-    // Snow cap on tall mountains
+    // Snow cap
     if (height > 0.6) {
       this.mapGraphics.fillStyle(PALETTE.rockSnow, 1);
-      this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.31, y + s * 0.38, x + s * 0.69, y + s * 0.38);
+      this.mapGraphics.fillTriangle(x + s / 2, y + 1, x + s / 2 - 3, y + 5, x + s / 2 + 3, y + 5);
     }
   }
 
   private drawTownTile(x: number, y: number, tileX: number, tileY: number): void {
     const s = MAP_TILE_SIZE;
-    // Town ground
-    this.mapGraphics.fillStyle(PALETTE.path, 1);
+
+    // Ground
+    this.mapGraphics.fillStyle(PALETTE.sand, 1);
     this.mapGraphics.fillRect(x, y, s, s);
 
     const buildingType = this.pseudoNoise(tileX * 7, tileY * 7);
 
     // Building wall
     this.mapGraphics.fillStyle(PALETTE.wallLight, 1);
-    this.mapGraphics.fillRect(x + s * 0.12, y + s * 0.38, s * 0.75, s * 0.56);
+    this.mapGraphics.fillRect(x + 2, y + 5, s - 4, s - 6);
 
     // Roof
-    const roofColor = buildingType > 0.5 ? PALETTE.roofRed : PALETTE.roofBlue;
+    const roofColor = buildingType > 0.66 ? PALETTE.roofRed :
+                      buildingType > 0.33 ? PALETTE.roofBlue : PALETTE.roofBrown;
     this.mapGraphics.fillStyle(roofColor, 1);
-    this.mapGraphics.fillTriangle(x + s * 0.5, y + s * 0.06, x + s * 0.06, y + s * 0.44, x + s * 0.94, y + s * 0.44);
+    this.mapGraphics.fillTriangle(x + s / 2, y + 1, x + 1, y + 6, x + s - 1, y + 6);
 
     // Door
     this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
-    this.mapGraphics.fillRect(x + s * 0.38, y + s * 0.56, s * 0.25, s * 0.38);
+    this.mapGraphics.fillRect(x + s / 2 - 2, y + s - 5, 4, 4);
 
     // Window
     this.mapGraphics.fillStyle(0x80c0ff, 1);
-    this.mapGraphics.fillRect(x + s * 0.18, y + s * 0.5, s * 0.15, s * 0.15);
-    this.mapGraphics.fillRect(x + s * 0.68, y + s * 0.5, s * 0.15, s * 0.15);
+    this.mapGraphics.fillRect(x + 4, y + 7, 3, 3);
+    if (s > 14) {
+      this.mapGraphics.fillRect(x + s - 7, y + 7, 3, 3);
+    }
   }
 
   private drawSandTile(x: number, y: number, tileX: number, tileY: number): void {
     const s = MAP_TILE_SIZE;
-    // Sand base
     this.mapGraphics.fillStyle(PALETTE.sand, 1);
     this.mapGraphics.fillRect(x, y, s, s);
 
-    // Sand texture
+    // Parking lot lines
     const variation = this.pseudoNoise(tileX * 4, tileY * 4);
-    if (variation > 0.6) {
-      this.mapGraphics.fillStyle(PALETTE.sandDark, 1);
-      this.mapGraphics.fillRect(x + s * 0.1, y + s * 0.3, s * 0.2, s * 0.05);
-      this.mapGraphics.fillRect(x + s * 0.55, y + s * 0.7, s * 0.25, s * 0.05);
+    if (variation > 0.5) {
+      this.mapGraphics.fillStyle(PALETTE.pathLight, 1);
+      this.mapGraphics.fillRect(x + s - 2, y + 2, 1, s - 4);
     }
   }
 
   private animateWater(): void {
-    // Redraw only water tiles for animation
     for (let y = 0; y < TILES_Y; y++) {
       for (let x = 0; x < TILES_X; x++) {
         if (this.terrainGrid[y][x] === 'water') {
@@ -389,31 +632,30 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createPlayerMarker(): void {
-    // Create SNES-style player sprite
     this.playerMarker = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2);
 
     const playerGraphics = this.add.graphics();
 
     // Shadow
     playerGraphics.fillStyle(0x000000, 0.3);
-    playerGraphics.fillEllipse(0, 6, 12, 4);
+    playerGraphics.fillEllipse(0, 8, 14, 6);
 
-    // Body (blue tunic like classic JRPG hero)
+    // Body (blue tunic)
     playerGraphics.fillStyle(0x4060c0, 1);
-    playerGraphics.fillRect(-5, -2, 10, 10);
+    playerGraphics.fillRect(-6, -2, 12, 12);
 
     // Head
     playerGraphics.fillStyle(0xffd0a0, 1);
-    playerGraphics.fillCircle(0, -6, 5);
+    playerGraphics.fillCircle(0, -7, 6);
 
     // Hair
     playerGraphics.fillStyle(0x804020, 1);
-    playerGraphics.fillRect(-4, -10, 8, 4);
+    playerGraphics.fillRect(-5, -12, 10, 5);
 
     // Eyes
     playerGraphics.fillStyle(0x000000, 1);
-    playerGraphics.fillRect(-3, -7, 2, 2);
-    playerGraphics.fillRect(1, -7, 2, 2);
+    playerGraphics.fillRect(-3, -8, 2, 2);
+    playerGraphics.fillRect(1, -8, 2, 2);
 
     this.playerMarker.add(playerGraphics);
     this.playerMarker.setDepth(100);
@@ -421,7 +663,7 @@ export class WorldScene extends Phaser.Scene {
     // Bobbing animation
     this.tweens.add({
       targets: this.playerMarker,
-      y: this.playerMarker.y - 2,
+      y: this.playerMarker.y - 3,
       duration: 400,
       yoyo: true,
       repeat: -1,
@@ -430,7 +672,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createResourceMarkers(): void {
-    // Spawn resource points (treasure chests)
+    // Spawn treasure chests
     for (let i = 0; i < 5; i++) {
       const x = Phaser.Math.Between(40, GAME_WIDTH - 40);
       const y = Phaser.Math.Between(100, GAME_HEIGHT - 200);
@@ -438,7 +680,6 @@ export class WorldScene extends Phaser.Scene {
       const container = this.add.container(x, y);
       const graphics = this.add.graphics();
 
-      // Treasure chest - SNES style
       // Chest body
       graphics.fillStyle(0x804020, 1);
       graphics.fillRect(-8, -4, 16, 10);
@@ -461,7 +702,6 @@ export class WorldScene extends Phaser.Scene {
       container.setInteractive(new Phaser.Geom.Rectangle(-10, -10, 20, 20), Phaser.Geom.Rectangle.Contains);
       container.on('pointerdown', () => this.onResourceTap(container));
 
-      // Sparkle effect
       this.tweens.add({
         targets: container,
         alpha: { from: 1, to: 0.7 },
@@ -473,7 +713,7 @@ export class WorldScene extends Phaser.Scene {
       this.resourceMarkers.push(container);
     }
 
-    // Spawn dungeon markers (cave entrances)
+    // Spawn dungeon markers
     for (let i = 0; i < 2; i++) {
       const x = Phaser.Math.Between(40, GAME_WIDTH - 40);
       const y = Phaser.Math.Between(100, GAME_HEIGHT - 200);
@@ -481,16 +721,14 @@ export class WorldScene extends Phaser.Scene {
       const container = this.add.container(x, y);
       const graphics = this.add.graphics();
 
-      // Cave entrance - SNES style
-      // Rock formation
+      // Cave entrance
       graphics.fillStyle(PALETTE.rockDark, 1);
       graphics.fillTriangle(0, -12, -14, 8, 14, 8);
 
-      // Cave opening
       graphics.fillStyle(0x101020, 1);
       graphics.fillEllipse(0, 2, 12, 10);
 
-      // Skull decoration
+      // Skull
       graphics.fillStyle(0xe0e0e0, 1);
       graphics.fillCircle(0, -2, 4);
       graphics.fillStyle(0x000000, 1);
@@ -507,16 +745,13 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createUI(): void {
-    // Header bar with SNES-style frame
     const headerBg = this.add.graphics();
     headerBg.fillStyle(0x202040, 1);
     headerBg.fillRect(0, 0, GAME_WIDTH, 60);
-    // Border
     headerBg.lineStyle(2, 0x4060a0, 1);
     headerBg.strokeRect(2, 2, GAME_WIDTH - 4, 56);
     headerBg.setDepth(200);
 
-    // Title with pixel font style
     const title = this.add.text(GAME_WIDTH / 2, 18, 'WORLD MAP', {
       fontSize: '18px',
       color: '#ffffff',
@@ -526,7 +761,6 @@ export class WorldScene extends Phaser.Scene {
     title.setOrigin(0.5, 0);
     title.setDepth(201);
 
-    // Position display
     this.positionText = this.add.text(10, 40, 'Lat: -- Lon: --', {
       fontSize: '10px',
       color: '#80a0c0',
@@ -534,7 +768,6 @@ export class WorldScene extends Phaser.Scene {
     });
     this.positionText.setDepth(201);
 
-    // Bottom navigation bar
     const navBg = this.add.graphics();
     navBg.fillStyle(0x202040, 1);
     navBg.fillRect(0, GAME_HEIGHT - 70, GAME_WIDTH, 70);
@@ -542,7 +775,6 @@ export class WorldScene extends Phaser.Scene {
     navBg.strokeRect(2, GAME_HEIGHT - 68, GAME_WIDTH - 4, 66);
     navBg.setDepth(200);
 
-    // Navigation buttons
     this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 35, 'WORLD', true);
     this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 35, 'KINGDOM', false, () => {
       this.scene.start('KingdomScene');
@@ -559,7 +791,6 @@ export class WorldScene extends Phaser.Scene {
     active: boolean,
     callback?: () => void
   ): void {
-    // Button background
     const bg = this.add.graphics();
     bg.fillStyle(active ? 0x4060a0 : 0x303050, 1);
     bg.fillRoundedRect(x - 40, y - 12, 80, 24, 4);
@@ -585,7 +816,6 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createMapToggle(): void {
-    // Map view toggle button (top right, below debug)
     this.mapToggleBg = this.add.graphics();
     this.mapToggleBg.fillStyle(0x206020, 1);
     this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
@@ -612,7 +842,6 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createRealMapOverlay(): void {
-    // Create iframe for OpenStreetMap
     const iframe = document.createElement('iframe');
     iframe.id = 'real-map-overlay';
     iframe.style.position = 'fixed';
@@ -622,16 +851,12 @@ export class WorldScene extends Phaser.Scene {
     iframe.style.pointerEvents = 'none';
     iframe.setAttribute('loading', 'lazy');
 
-    // Position iframe over the game canvas
     this.positionRealMapOverlay(iframe);
-
     this.updateRealMapUrl(iframe);
 
-    // Add to body for fixed positioning
     document.body.appendChild(iframe);
     this.realMapElement = iframe;
 
-    // Reposition on window resize
     this.resizeHandler = () => this.positionRealMapOverlay();
     window.addEventListener('resize', this.resizeHandler);
   }
@@ -640,14 +865,10 @@ export class WorldScene extends Phaser.Scene {
     const el = iframe || this.realMapElement;
     if (!el) return;
 
-    // Get the canvas element's position
     const canvas = this.game.canvas;
     const rect = canvas.getBoundingClientRect();
-
-    // Calculate scale factor (canvas may be scaled to fit)
     const scale = rect.height / GAME_HEIGHT;
 
-    // Position iframe to match game area (below header, above nav)
     const headerHeight = 60 * scale;
     const navHeight = 70 * scale;
 
@@ -663,20 +884,17 @@ export class WorldScene extends Phaser.Scene {
 
     const lat = this.currentPosition.latitude;
     const lon = this.currentPosition.longitude;
-    const zoom = 18; // Street level zoom
+    const zoom = 18;
 
-    // OpenStreetMap embed URL
     const bbox = this.calculateBbox(lat, lon, zoom);
     el.src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
   }
 
   private calculateBbox(lat: number, lon: number, zoom: number): string {
-    // Calculate bounding box for the map view
-    // At zoom 18, roughly 0.002 degrees covers a small area
     const delta = 0.003 / Math.pow(2, zoom - 16);
     const west = lon - delta;
     const east = lon + delta;
-    const south = lat - delta * 0.7; // Account for aspect ratio
+    const south = lat - delta * 0.7;
     const north = lat + delta * 0.7;
     return `${west},${south},${east},${north}`;
   }
@@ -685,7 +903,6 @@ export class WorldScene extends Phaser.Scene {
     this.isRealMapView = !this.isRealMapView;
 
     if (this.isRealMapView) {
-      // Show real map
       if (this.realMapElement) {
         this.positionRealMapOverlay();
         this.updateRealMapUrl();
@@ -699,7 +916,6 @@ export class WorldScene extends Phaser.Scene {
       this.mapToggleBg.lineStyle(1, 0x80a0e0, 1);
       this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
     } else {
-      // Show RPG map
       if (this.realMapElement) {
         this.realMapElement.style.display = 'none';
       }
@@ -753,7 +969,7 @@ export class WorldScene extends Phaser.Scene {
       this.currentPosition.latitude = value;
       latValue.setText(value.toFixed(4));
       this.updatePositionDisplay();
-      this.regenerateMap();
+      this.fetchOSMData();
     });
 
     const lonLabel = this.add.text(15, 48, 'LON:', {
@@ -774,17 +990,20 @@ export class WorldScene extends Phaser.Scene {
       this.currentPosition.longitude = value;
       lonValue.setText(value.toFixed(4));
       this.updatePositionDisplay();
-      this.regenerateMap();
+      this.fetchOSMData();
     });
 
-    const moveBtn = this.add.text(GAME_WIDTH / 2, 92, '[ SIMULATE WALK ]', {
+    const moveBtn = this.add.text(GAME_WIDTH / 2, 92, '[ RELOAD MAP ]', {
       fontSize: '11px',
       color: '#80ff80',
       fontFamily: 'monospace',
     });
     moveBtn.setOrigin(0.5);
     moveBtn.setInteractive();
-    moveBtn.on('pointerdown', () => this.simulateWalk());
+    moveBtn.on('pointerdown', () => {
+      this.lastFetchPosition = null;
+      this.fetchOSMData();
+    });
     moveBtn.on('pointerover', () => moveBtn.setColor('#ffff80'));
     moveBtn.on('pointerout', () => moveBtn.setColor('#80ff80'));
     this.debugContainer.add(moveBtn);
@@ -823,35 +1042,9 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
-  private regenerateMap(): void {
-    this.generateTerrainGrid();
-    this.drawMap();
-    if (this.isRealMapView) {
-      this.updateRealMapUrl();
-    }
-  }
-
   private toggleDebugMode(): void {
     this.isDebugMode = !this.isDebugMode;
     this.debugContainer.setVisible(this.isDebugMode);
-  }
-
-  private simulateWalk(): void {
-    const latDelta = (Math.random() - 0.5) * 0.002;
-    const lonDelta = (Math.random() - 0.5) * 0.002;
-
-    this.currentPosition.latitude += latDelta;
-    this.currentPosition.longitude += lonDelta;
-    this.updatePositionDisplay();
-    this.regenerateMap();
-
-    // Walking animation
-    this.tweens.add({
-      targets: this.playerMarker,
-      scaleX: 0.9,
-      duration: 100,
-      yoyo: true,
-    });
   }
 
   private initGeolocation(): void {
@@ -875,9 +1068,6 @@ export class WorldScene extends Phaser.Scene {
   private onGeolocationUpdate(position: GeolocationPosition): void {
     if (this.isDebugMode) return;
 
-    const oldLat = this.currentPosition.latitude;
-    const oldLon = this.currentPosition.longitude;
-
     this.currentPosition = {
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
@@ -885,14 +1075,10 @@ export class WorldScene extends Phaser.Scene {
     };
 
     this.updatePositionDisplay();
+    this.fetchOSMData();
 
-    // Regenerate map if position changed significantly
-    if (Math.abs(oldLat - this.currentPosition.latitude) > 0.0001 ||
-        Math.abs(oldLon - this.currentPosition.longitude) > 0.0001) {
-      this.regenerateMap();
-      if (this.isRealMapView) {
-        this.updateRealMapUrl();
-      }
+    if (this.isRealMapView) {
+      this.updateRealMapUrl();
     }
   }
 
@@ -919,14 +1105,12 @@ export class WorldScene extends Phaser.Scene {
     );
 
     if (distance < 80) {
-      // Chest opening animation
       this.tweens.add({
         targets: marker,
         scaleY: 1.3,
         duration: 150,
         yoyo: true,
         onComplete: () => {
-          // Sparkle burst
           for (let i = 0; i < 8; i++) {
             const angle = (i / 8) * Math.PI * 2;
             const sparkle = this.add.circle(
@@ -966,7 +1150,6 @@ export class WorldScene extends Phaser.Scene {
     );
 
     if (distance < 80) {
-      // Screen transition effect
       this.cameras.main.fadeOut(500, 0, 0, 0, (_camera: Phaser.Cameras.Scene2D.Camera, progress: number) => {
         if (progress === 1) {
           this.scene.start('BattleScene');
@@ -981,12 +1164,10 @@ export class WorldScene extends Phaser.Scene {
     if (this.watchId !== null) {
       navigator.geolocation.clearWatch(this.watchId);
     }
-    // Clean up resize listener
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler);
       this.resizeHandler = null;
     }
-    // Clean up real map iframe
     if (this.realMapElement) {
       this.realMapElement.remove();
       this.realMapElement = null;
