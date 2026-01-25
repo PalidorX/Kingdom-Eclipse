@@ -94,13 +94,34 @@ export class WorldScene extends Phaser.Scene {
   }
 
   create(): void {
+    // Get pre-loaded data from BootScene
+    const initialPosition = this.registry.get('initialPosition');
+    const initialOSMData = this.registry.get('initialOSMData');
+
+    // Use pre-loaded position if available
+    if (initialPosition) {
+      this.currentPosition = initialPosition;
+      this.lastFetchPosition = {
+        lat: initialPosition.latitude,
+        lon: initialPosition.longitude,
+      };
+    }
+
     // Create map container for all map elements
     this.mapContainer = this.add.container(0, 0);
 
-    // Initialize with grass
+    // Initialize terrain grid
     this.initializeTerrainGrid();
     this.createWorldMap();
     this.createLoadingIndicator();
+
+    // Use pre-loaded OSM data if available
+    if (initialOSMData) {
+      this.parseOSMData(initialOSMData);
+      this.generateTerrainFromOSM();
+      this.drawMap();
+    }
+
     this.createPlayerMarker();
     this.createResourceMarkers();
     this.createUI();
@@ -108,9 +129,6 @@ export class WorldScene extends Phaser.Scene {
     this.createRealMapOverlay();
     this.createDebugUI();
     this.initGeolocation();
-
-    // Fetch OSM data for initial position
-    this.fetchOSMData();
 
     // Start UIScene in parallel
     this.scene.launch('UIScene');
