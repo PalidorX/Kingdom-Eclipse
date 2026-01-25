@@ -7,10 +7,56 @@ interface GeoPosition {
   accuracy: number;
 }
 
+// SNES-style color palette (limited colors like classic JRPGs)
+const PALETTE = {
+  // Water colors
+  waterDeep: 0x2038a0,
+  waterShallow: 0x3060c0,
+  waterShore: 0x4080d0,
+
+  // Grass/Land colors
+  grassDark: 0x206020,
+  grass: 0x40a040,
+  grassLight: 0x60c060,
+
+  // Forest colors
+  treeDark: 0x184018,
+  tree: 0x306030,
+  treeLight: 0x408040,
+
+  // Path/Road colors
+  pathDark: 0x806040,
+  path: 0xa08060,
+  pathLight: 0xc0a080,
+
+  // Mountain/Rock colors
+  rockDark: 0x505050,
+  rock: 0x808080,
+  rockLight: 0xa0a0a0,
+  rockSnow: 0xe0e0f0,
+
+  // Town/Building colors
+  roofRed: 0xc04040,
+  roofBlue: 0x4040c0,
+  wallLight: 0xe0d0c0,
+  wallDark: 0xa09080,
+
+  // Sand/Desert colors
+  sand: 0xe0c080,
+  sandDark: 0xc0a060,
+};
+
+// Tile size for the SNES-style map
+const MAP_TILE_SIZE = 16;
+const TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
+const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
+
+type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand';
+
 export class WorldScene extends Phaser.Scene {
-  private playerMarker!: Phaser.GameObjects.Sprite;
+  private playerMarker!: Phaser.GameObjects.Container;
   private currentPosition: GeoPosition = {
-    latitude: 37.7749, // Default: San Francisco
+    latitude: 37.7749,
     longitude: -122.4194,
     accuracy: 0,
   };
@@ -18,14 +64,22 @@ export class WorldScene extends Phaser.Scene {
   private isDebugMode: boolean = false;
   private debugContainer!: Phaser.GameObjects.Container;
   private positionText!: Phaser.GameObjects.Text;
-  private resourceMarkers: Phaser.GameObjects.Sprite[] = [];
-  private dungeonMarkers: Phaser.GameObjects.Sprite[] = [];
+  private resourceMarkers: Phaser.GameObjects.Container[] = [];
+  private dungeonMarkers: Phaser.GameObjects.Container[] = [];
+  private mapGraphics!: Phaser.GameObjects.Graphics;
+  private terrainGrid: TerrainType[][] = [];
+  private animationTime: number = 0;
+  private mapContainer!: Phaser.GameObjects.Container;
 
   constructor() {
     super({ key: 'WorldScene' });
   }
 
   create(): void {
+    // Create map container for all map elements
+    this.mapContainer = this.add.container(0, 0);
+
+    this.generateTerrainGrid();
     this.createWorldMap();
     this.createPlayerMarker();
     this.createResourceMarkers();
@@ -37,47 +91,304 @@ export class WorldScene extends Phaser.Scene {
     this.scene.launch('UIScene');
   }
 
+  update(_time: number, delta: number): void {
+    this.animationTime += delta;
+
+    // Animate water tiles every 500ms
+    if (Math.floor(this.animationTime / 500) !== Math.floor((this.animationTime - delta) / 500)) {
+      this.animateWater();
+    }
+  }
+
+  private generateTerrainGrid(): void {
+    this.terrainGrid = [];
+
+    for (let y = 0; y < TILES_Y; y++) {
+      this.terrainGrid[y] = [];
+      for (let x = 0; x < TILES_X; x++) {
+        this.terrainGrid[y][x] = this.getTerrainAt(x, y);
+      }
+    }
+  }
+
+  private getTerrainAt(tileX: number, tileY: number): TerrainType {
+    // Use GPS position as seed for procedural generation
+    const worldX = this.currentPosition.longitude * 1000 + tileX;
+    const worldY = this.currentPosition.latitude * 1000 + tileY;
+
+    // Simple noise-like function for terrain generation
+    const noise = this.pseudoNoise(worldX, worldY);
+    const noise2 = this.pseudoNoise(worldX * 2.5, worldY * 2.5);
+
+    // Distance from center affects terrain (player is always on land)
+    const centerX = TILES_X / 2;
+    const centerY = TILES_Y / 2;
+    const distFromCenter = Math.sqrt(Math.pow(tileX - centerX, 2) + Math.pow(tileY - centerY, 2));
+    const maxDist = Math.sqrt(Math.pow(TILES_X / 2, 2) + Math.pow(TILES_Y / 2, 2));
+    const normalizedDist = distFromCenter / maxDist;
+
+    // Ensure center area is always land
+    if (distFromCenter < 3) {
+      return noise2 > 0.6 ? 'path' : 'grass';
+    }
+
+    // Water at edges
+    if (normalizedDist > 0.85 && noise < 0.4) {
+      return 'water';
+    }
+
+    // Determine terrain based on noise
+    if (noise < 0.2) {
+      return normalizedDist > 0.6 ? 'water' : 'sand';
+    } else if (noise < 0.4) {
+      return 'grass';
+    } else if (noise < 0.55) {
+      return noise2 > 0.5 ? 'forest' : 'grass';
+    } else if (noise < 0.7) {
+      return 'forest';
+    } else if (noise < 0.8) {
+      return noise2 > 0.6 ? 'mountain' : 'forest';
+    } else if (noise < 0.9) {
+      return 'mountain';
+    } else {
+      // Towns are rare
+      return 'town';
+    }
+  }
+
+  private pseudoNoise(x: number, y: number): number {
+    // Simple pseudo-random noise function
+    const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+    return n - Math.floor(n);
+  }
+
   private createWorldMap(): void {
-    // Create a simple grid-based world map background
-    const graphics = this.add.graphics();
+    this.mapGraphics = this.add.graphics();
+    this.mapContainer.add(this.mapGraphics);
 
-    // Background color (water)
-    graphics.fillStyle(0x3b7cb5, 1);
-    graphics.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    this.drawMap();
+  }
 
-    // Create some "land" patches as visual placeholder
-    graphics.fillStyle(0x4a7c3f, 1);
-    for (let i = 0; i < 10; i++) {
-      const x = Phaser.Math.Between(20, GAME_WIDTH - 60);
-      const y = Phaser.Math.Between(80, GAME_HEIGHT - 200);
-      const w = Phaser.Math.Between(40, 100);
-      const h = Phaser.Math.Between(40, 100);
-      graphics.fillRoundedRect(x, y, w, h, 10);
+  private drawMap(): void {
+    this.mapGraphics.clear();
+
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        this.drawTile(x, y, this.terrainGrid[y][x]);
+      }
+    }
+  }
+
+  private drawTile(tileX: number, tileY: number, terrain: TerrainType): void {
+    const x = tileX * MAP_TILE_SIZE;
+    const y = tileY * MAP_TILE_SIZE;
+
+    switch (terrain) {
+      case 'water':
+        this.drawWaterTile(x, y, tileX, tileY);
+        break;
+      case 'grass':
+        this.drawGrassTile(x, y, tileX, tileY);
+        break;
+      case 'forest':
+        this.drawForestTile(x, y, tileX, tileY);
+        break;
+      case 'path':
+        this.drawPathTile(x, y);
+        break;
+      case 'mountain':
+        this.drawMountainTile(x, y, tileX, tileY);
+        break;
+      case 'town':
+        this.drawTownTile(x, y, tileX, tileY);
+        break;
+      case 'sand':
+        this.drawSandTile(x, y, tileX, tileY);
+        break;
+    }
+  }
+
+  private drawWaterTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Animated water with wave pattern
+    const waveOffset = Math.floor(this.animationTime / 500) % 2;
+    const isWave = ((tileX + tileY + waveOffset) % 2) === 0;
+
+    this.mapGraphics.fillStyle(isWave ? PALETTE.waterDeep : PALETTE.waterShallow, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    // Add wave highlights
+    if (isWave) {
+      this.mapGraphics.fillStyle(PALETTE.waterShore, 0.5);
+      this.mapGraphics.fillRect(x + 4, y + 6, 8, 2);
+    }
+  }
+
+  private drawGrassTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Base grass
+    const variation = this.pseudoNoise(tileX * 3, tileY * 3);
+    this.mapGraphics.fillStyle(variation > 0.5 ? PALETTE.grass : PALETTE.grassLight, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    // Add grass tufts
+    if (variation > 0.7) {
+      this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
+      this.mapGraphics.fillRect(x + 3, y + 10, 2, 4);
+      this.mapGraphics.fillRect(x + 10, y + 8, 2, 4);
     }
 
-    // Grid overlay for reference
-    graphics.lineStyle(1, 0xffffff, 0.1);
-    for (let x = 0; x < GAME_WIDTH; x += 50) {
-      graphics.lineBetween(x, 0, x, GAME_HEIGHT);
+    // Occasional flowers
+    if (variation > 0.9) {
+      this.mapGraphics.fillStyle(0xff6080, 1);
+      this.mapGraphics.fillRect(x + 7, y + 5, 2, 2);
     }
-    for (let y = 0; y < GAME_HEIGHT; y += 50) {
-      graphics.lineBetween(0, y, GAME_WIDTH, y);
+  }
+
+  private drawForestTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Forest floor
+    this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    const variation = this.pseudoNoise(tileX * 5, tileY * 5);
+
+    // Draw tree - classic SNES triangle tree
+    const treeColor = variation > 0.5 ? PALETTE.tree : PALETTE.treeDark;
+    const trunkX = x + 6;
+
+    // Tree trunk
+    this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
+    this.mapGraphics.fillRect(trunkX + 1, y + 10, 2, 6);
+
+    // Tree foliage (layered triangles like FF6)
+    this.mapGraphics.fillStyle(treeColor, 1);
+    // Bottom layer
+    this.mapGraphics.fillTriangle(x + 7, y + 2, x + 2, y + 10, x + 12, y + 10);
+    // Top layer (lighter)
+    this.mapGraphics.fillStyle(PALETTE.treeLight, 1);
+    this.mapGraphics.fillTriangle(x + 7, y + 0, x + 4, y + 6, x + 10, y + 6);
+  }
+
+  private drawPathTile(x: number, y: number): void {
+    // Dirt path
+    this.mapGraphics.fillStyle(PALETTE.path, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    // Add some texture
+    this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
+    this.mapGraphics.fillRect(x + 2, y + 4, 2, 2);
+    this.mapGraphics.fillRect(x + 10, y + 10, 3, 2);
+
+    this.mapGraphics.fillStyle(PALETTE.pathLight, 1);
+    this.mapGraphics.fillRect(x + 6, y + 8, 2, 2);
+  }
+
+  private drawMountainTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Mountain base
+    this.mapGraphics.fillStyle(PALETTE.grassDark, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    const height = this.pseudoNoise(tileX * 2, tileY * 2);
+
+    // Mountain shape
+    this.mapGraphics.fillStyle(PALETTE.rock, 1);
+    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 14, x + 15, y + 14);
+
+    // Shading on left side
+    this.mapGraphics.fillStyle(PALETTE.rockDark, 1);
+    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 14, x + 8, y + 14);
+
+    // Snow cap on tall mountains
+    if (height > 0.6) {
+      this.mapGraphics.fillStyle(PALETTE.rockSnow, 1);
+      this.mapGraphics.fillTriangle(x + 8, y + 1, x + 5, y + 6, x + 11, y + 6);
+    }
+  }
+
+  private drawTownTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Town ground
+    this.mapGraphics.fillStyle(PALETTE.path, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    const buildingType = this.pseudoNoise(tileX * 7, tileY * 7);
+
+    // Building wall
+    this.mapGraphics.fillStyle(PALETTE.wallLight, 1);
+    this.mapGraphics.fillRect(x + 2, y + 6, 12, 10);
+
+    // Roof
+    const roofColor = buildingType > 0.5 ? PALETTE.roofRed : PALETTE.roofBlue;
+    this.mapGraphics.fillStyle(roofColor, 1);
+    this.mapGraphics.fillTriangle(x + 8, y + 1, x + 1, y + 7, x + 15, y + 7);
+
+    // Door
+    this.mapGraphics.fillStyle(PALETTE.pathDark, 1);
+    this.mapGraphics.fillRect(x + 6, y + 10, 4, 6);
+
+    // Window
+    this.mapGraphics.fillStyle(0x80c0ff, 1);
+    this.mapGraphics.fillRect(x + 4, y + 8, 2, 2);
+    this.mapGraphics.fillRect(x + 10, y + 8, 2, 2);
+  }
+
+  private drawSandTile(x: number, y: number, tileX: number, tileY: number): void {
+    // Sand base
+    this.mapGraphics.fillStyle(PALETTE.sand, 1);
+    this.mapGraphics.fillRect(x, y, MAP_TILE_SIZE, MAP_TILE_SIZE);
+
+    // Sand texture
+    const variation = this.pseudoNoise(tileX * 4, tileY * 4);
+    if (variation > 0.6) {
+      this.mapGraphics.fillStyle(PALETTE.sandDark, 1);
+      this.mapGraphics.fillRect(x + 3, y + 5, 3, 1);
+      this.mapGraphics.fillRect(x + 9, y + 11, 4, 1);
+    }
+  }
+
+  private animateWater(): void {
+    // Redraw only water tiles for animation
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        if (this.terrainGrid[y][x] === 'water') {
+          this.drawWaterTile(x * MAP_TILE_SIZE, y * MAP_TILE_SIZE, x, y);
+        }
+      }
     }
   }
 
   private createPlayerMarker(): void {
-    this.playerMarker = this.add.sprite(
-      GAME_WIDTH / 2,
-      GAME_HEIGHT / 2,
-      'marker-player'
-    );
+    // Create SNES-style player sprite
+    this.playerMarker = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT / 2);
+
+    const playerGraphics = this.add.graphics();
+
+    // Shadow
+    playerGraphics.fillStyle(0x000000, 0.3);
+    playerGraphics.fillEllipse(0, 6, 12, 4);
+
+    // Body (blue tunic like classic JRPG hero)
+    playerGraphics.fillStyle(0x4060c0, 1);
+    playerGraphics.fillRect(-5, -2, 10, 10);
+
+    // Head
+    playerGraphics.fillStyle(0xffd0a0, 1);
+    playerGraphics.fillCircle(0, -6, 5);
+
+    // Hair
+    playerGraphics.fillStyle(0x804020, 1);
+    playerGraphics.fillRect(-4, -10, 8, 4);
+
+    // Eyes
+    playerGraphics.fillStyle(0x000000, 1);
+    playerGraphics.fillRect(-3, -7, 2, 2);
+    playerGraphics.fillRect(1, -7, 2, 2);
+
+    this.playerMarker.add(playerGraphics);
     this.playerMarker.setDepth(100);
 
-    // Pulsing animation
+    // Bobbing animation
     this.tweens.add({
       targets: this.playerMarker,
-      scale: { from: 1, to: 1.2 },
-      duration: 500,
+      y: this.playerMarker.y - 2,
+      duration: 400,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
@@ -85,39 +396,98 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private createResourceMarkers(): void {
-    // Spawn random resource points
+    // Spawn resource points (treasure chests)
     for (let i = 0; i < 5; i++) {
-      const x = Phaser.Math.Between(30, GAME_WIDTH - 30);
+      const x = Phaser.Math.Between(40, GAME_WIDTH - 40);
       const y = Phaser.Math.Between(100, GAME_HEIGHT - 200);
-      const marker = this.add.sprite(x, y, 'marker-resource');
-      marker.setInteractive();
-      marker.on('pointerdown', () => this.onResourceTap(marker));
-      this.resourceMarkers.push(marker);
+
+      const container = this.add.container(x, y);
+      const graphics = this.add.graphics();
+
+      // Treasure chest - SNES style
+      // Chest body
+      graphics.fillStyle(0x804020, 1);
+      graphics.fillRect(-8, -4, 16, 10);
+
+      // Chest lid
+      graphics.fillStyle(0xa06030, 1);
+      graphics.fillRect(-8, -8, 16, 5);
+
+      // Metal bands
+      graphics.fillStyle(0xc0a000, 1);
+      graphics.fillRect(-8, -4, 16, 2);
+      graphics.fillRect(-2, -8, 4, 14);
+
+      // Keyhole
+      graphics.fillStyle(0x000000, 1);
+      graphics.fillCircle(0, 0, 2);
+
+      container.add(graphics);
+      container.setDepth(50);
+      container.setInteractive(new Phaser.Geom.Rectangle(-10, -10, 20, 20), Phaser.Geom.Rectangle.Contains);
+      container.on('pointerdown', () => this.onResourceTap(container));
+
+      // Sparkle effect
+      this.tweens.add({
+        targets: container,
+        alpha: { from: 1, to: 0.7 },
+        duration: 800,
+        yoyo: true,
+        repeat: -1,
+      });
+
+      this.resourceMarkers.push(container);
     }
 
-    // Spawn dungeon markers
+    // Spawn dungeon markers (cave entrances)
     for (let i = 0; i < 2; i++) {
-      const x = Phaser.Math.Between(30, GAME_WIDTH - 30);
+      const x = Phaser.Math.Between(40, GAME_WIDTH - 40);
       const y = Phaser.Math.Between(100, GAME_HEIGHT - 200);
-      const marker = this.add.sprite(x, y, 'marker-dungeon');
-      marker.setInteractive();
-      marker.on('pointerdown', () => this.onDungeonTap(marker));
-      this.dungeonMarkers.push(marker);
+
+      const container = this.add.container(x, y);
+      const graphics = this.add.graphics();
+
+      // Cave entrance - SNES style
+      // Rock formation
+      graphics.fillStyle(PALETTE.rockDark, 1);
+      graphics.fillTriangle(0, -12, -14, 8, 14, 8);
+
+      // Cave opening
+      graphics.fillStyle(0x101020, 1);
+      graphics.fillEllipse(0, 2, 12, 10);
+
+      // Skull decoration
+      graphics.fillStyle(0xe0e0e0, 1);
+      graphics.fillCircle(0, -2, 4);
+      graphics.fillStyle(0x000000, 1);
+      graphics.fillRect(-3, -3, 2, 2);
+      graphics.fillRect(1, -3, 2, 2);
+
+      container.add(graphics);
+      container.setDepth(50);
+      container.setInteractive(new Phaser.Geom.Rectangle(-15, -15, 30, 30), Phaser.Geom.Rectangle.Contains);
+      container.on('pointerdown', () => this.onDungeonTap(container));
+
+      this.dungeonMarkers.push(container);
     }
   }
 
   private createUI(): void {
-    // Header bar
+    // Header bar with SNES-style frame
     const headerBg = this.add.graphics();
-    headerBg.fillStyle(0x1a1a2e, 0.9);
+    headerBg.fillStyle(0x202040, 1);
     headerBg.fillRect(0, 0, GAME_WIDTH, 60);
+    // Border
+    headerBg.lineStyle(2, 0x4060a0, 1);
+    headerBg.strokeRect(2, 2, GAME_WIDTH - 4, 56);
     headerBg.setDepth(200);
 
-    // Title
-    const title = this.add.text(GAME_WIDTH / 2, 20, 'World Map', {
-      fontSize: '20px',
+    // Title with pixel font style
+    const title = this.add.text(GAME_WIDTH / 2, 18, 'WORLD MAP', {
+      fontSize: '18px',
       color: '#ffffff',
       fontStyle: 'bold',
+      fontFamily: 'monospace',
     });
     title.setOrigin(0.5, 0);
     title.setDepth(201);
@@ -125,22 +495,25 @@ export class WorldScene extends Phaser.Scene {
     // Position display
     this.positionText = this.add.text(10, 40, 'Lat: -- Lon: --', {
       fontSize: '10px',
-      color: '#aaaaaa',
+      color: '#80a0c0',
+      fontFamily: 'monospace',
     });
     this.positionText.setDepth(201);
 
     // Bottom navigation bar
     const navBg = this.add.graphics();
-    navBg.fillStyle(0x1a1a2e, 0.95);
-    navBg.fillRect(0, GAME_HEIGHT - 80, GAME_WIDTH, 80);
+    navBg.fillStyle(0x202040, 1);
+    navBg.fillRect(0, GAME_HEIGHT - 70, GAME_WIDTH, 70);
+    navBg.lineStyle(2, 0x4060a0, 1);
+    navBg.strokeRect(2, GAME_HEIGHT - 68, GAME_WIDTH - 4, 66);
     navBg.setDepth(200);
 
     // Navigation buttons
-    this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 40, 'World', true);
-    this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 40, 'Kingdom', false, () => {
+    this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 35, 'WORLD', true);
+    this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 35, 'KINGDOM', false, () => {
       this.scene.start('KingdomScene');
     });
-    this.createNavButton((GAME_WIDTH / 4) * 3, GAME_HEIGHT - 40, 'Battle', false, () => {
+    this.createNavButton((GAME_WIDTH / 4) * 3, GAME_HEIGHT - 35, 'BATTLE', false, () => {
       this.scene.start('BattleScene');
     });
   }
@@ -152,90 +525,105 @@ export class WorldScene extends Phaser.Scene {
     active: boolean,
     callback?: () => void
   ): void {
+    // Button background
+    const bg = this.add.graphics();
+    bg.fillStyle(active ? 0x4060a0 : 0x303050, 1);
+    bg.fillRoundedRect(x - 40, y - 12, 80, 24, 4);
+    bg.lineStyle(1, active ? 0x80a0e0 : 0x505070, 1);
+    bg.strokeRoundedRect(x - 40, y - 12, 80, 24, 4);
+    bg.setDepth(201);
+
     const btn = this.add.text(x, y, label, {
-      fontSize: '14px',
-      color: active ? '#4a90d9' : '#888888',
-      fontStyle: active ? 'bold' : 'normal',
+      fontSize: '11px',
+      color: active ? '#ffffff' : '#808090',
+      fontStyle: 'bold',
+      fontFamily: 'monospace',
     });
     btn.setOrigin(0.5);
-    btn.setDepth(201);
+    btn.setDepth(202);
 
     if (callback) {
-      btn.setInteractive();
-      btn.on('pointerdown', callback);
-      btn.on('pointerover', () => btn.setColor('#ffffff'));
-      btn.on('pointerout', () => btn.setColor(active ? '#4a90d9' : '#888888'));
+      bg.setInteractive(new Phaser.Geom.Rectangle(x - 40, y - 12, 80, 24), Phaser.Geom.Rectangle.Contains);
+      bg.on('pointerdown', callback);
+      bg.on('pointerover', () => btn.setColor('#ffff80'));
+      bg.on('pointerout', () => btn.setColor(active ? '#ffffff' : '#808090'));
     }
   }
 
   private createDebugUI(): void {
-    // Debug mode toggle - always visible
-    const debugToggle = this.add.text(GAME_WIDTH - 10, 10, '[DEBUG]', {
+    const debugToggle = this.add.text(GAME_WIDTH - 10, 10, '[DBG]', {
       fontSize: '10px',
-      color: '#666666',
+      color: '#606080',
+      fontFamily: 'monospace',
     });
     debugToggle.setOrigin(1, 0);
     debugToggle.setDepth(300);
     debugToggle.setInteractive();
     debugToggle.on('pointerdown', () => this.toggleDebugMode());
 
-    // Debug controls container (hidden by default)
-    this.debugContainer = this.add.container(0, 70);
+    this.debugContainer = this.add.container(0, 65);
     this.debugContainer.setDepth(300);
     this.debugContainer.setVisible(false);
 
-    // Background panel
     const panelBg = this.add.graphics();
-    panelBg.fillStyle(0x000000, 0.8);
-    panelBg.fillRect(10, 0, GAME_WIDTH - 20, 120);
+    panelBg.fillStyle(0x202040, 0.95);
+    panelBg.fillRect(5, 0, GAME_WIDTH - 10, 110);
+    panelBg.lineStyle(2, 0x4060a0, 1);
+    panelBg.strokeRect(5, 0, GAME_WIDTH - 10, 110);
     this.debugContainer.add(panelBg);
 
-    // Latitude control
-    const latLabel = this.add.text(20, 10, 'Latitude:', {
-      fontSize: '12px',
-      color: '#ffffff',
+    const latLabel = this.add.text(15, 8, 'LAT:', {
+      fontSize: '11px',
+      color: '#80a0c0',
+      fontFamily: 'monospace',
     });
     this.debugContainer.add(latLabel);
 
-    const latValue = this.add.text(150, 10, this.currentPosition.latitude.toFixed(4), {
-      fontSize: '12px',
-      color: '#4a90d9',
+    const latValue = this.add.text(120, 8, this.currentPosition.latitude.toFixed(4), {
+      fontSize: '11px',
+      color: '#ffffff',
+      fontFamily: 'monospace',
     });
     this.debugContainer.add(latValue);
 
-    this.createDebugSlider(20, 30, 'lat', -90, 90, this.currentPosition.latitude, (value) => {
+    this.createDebugSlider(15, 25, 'lat', -90, 90, this.currentPosition.latitude, (value) => {
       this.currentPosition.latitude = value;
       latValue.setText(value.toFixed(4));
       this.updatePositionDisplay();
+      this.regenerateMap();
     });
 
-    // Longitude control
-    const lonLabel = this.add.text(20, 55, 'Longitude:', {
-      fontSize: '12px',
-      color: '#ffffff',
+    const lonLabel = this.add.text(15, 48, 'LON:', {
+      fontSize: '11px',
+      color: '#80a0c0',
+      fontFamily: 'monospace',
     });
     this.debugContainer.add(lonLabel);
 
-    const lonValue = this.add.text(150, 55, this.currentPosition.longitude.toFixed(4), {
-      fontSize: '12px',
-      color: '#4a90d9',
+    const lonValue = this.add.text(120, 48, this.currentPosition.longitude.toFixed(4), {
+      fontSize: '11px',
+      color: '#ffffff',
+      fontFamily: 'monospace',
     });
     this.debugContainer.add(lonValue);
 
-    this.createDebugSlider(20, 75, 'lon', -180, 180, this.currentPosition.longitude, (value) => {
+    this.createDebugSlider(15, 65, 'lon', -180, 180, this.currentPosition.longitude, (value) => {
       this.currentPosition.longitude = value;
       lonValue.setText(value.toFixed(4));
       this.updatePositionDisplay();
+      this.regenerateMap();
     });
 
-    // Simulate movement button
-    const moveBtn = this.add.text(GAME_WIDTH / 2, 105, '[ Simulate Walk ]', {
-      fontSize: '12px',
-      color: '#32cd32',
+    const moveBtn = this.add.text(GAME_WIDTH / 2, 92, '[ SIMULATE WALK ]', {
+      fontSize: '11px',
+      color: '#80ff80',
+      fontFamily: 'monospace',
     });
     moveBtn.setOrigin(0.5);
     moveBtn.setInteractive();
     moveBtn.on('pointerdown', () => this.simulateWalk());
+    moveBtn.on('pointerover', () => moveBtn.setColor('#ffff80'));
+    moveBtn.on('pointerout', () => moveBtn.setColor('#80ff80'));
     this.debugContainer.add(moveBtn);
   }
 
@@ -248,24 +636,20 @@ export class WorldScene extends Phaser.Scene {
     initial: number,
     onChange: (value: number) => void
   ): void {
-    const width = GAME_WIDTH - 60;
+    const width = GAME_WIDTH - 50;
 
-    // Track
     const track = this.add.graphics();
-    track.fillStyle(0x333333, 1);
-    track.fillRect(x, y, width, 10);
+    track.fillStyle(0x404060, 1);
+    track.fillRoundedRect(x, y, width, 8, 4);
     this.debugContainer.add(track);
 
-    // Calculate initial position
     const normalizedInitial = (initial - min) / (max - min);
     const handleX = x + normalizedInitial * width;
 
-    // Handle
-    const handle = this.add.circle(handleX, y + 5, 8, 0x4a90d9);
+    const handle = this.add.circle(handleX, y + 4, 8, 0x80a0e0);
     handle.setInteractive({ draggable: true });
     this.debugContainer.add(handle);
 
-    // Drag handling
     handle.on('drag', (_pointer: Phaser.Input.Pointer, dragX: number) => {
       const clampedX = Phaser.Math.Clamp(dragX, x, x + width);
       handle.x = clampedX;
@@ -276,27 +660,31 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  private regenerateMap(): void {
+    this.generateTerrainGrid();
+    this.drawMap();
+  }
+
   private toggleDebugMode(): void {
     this.isDebugMode = !this.isDebugMode;
     this.debugContainer.setVisible(this.isDebugMode);
   }
 
   private simulateWalk(): void {
-    // Simulate walking in a random direction
-    const latDelta = (Math.random() - 0.5) * 0.001;
-    const lonDelta = (Math.random() - 0.5) * 0.001;
+    const latDelta = (Math.random() - 0.5) * 0.002;
+    const lonDelta = (Math.random() - 0.5) * 0.002;
 
     this.currentPosition.latitude += latDelta;
     this.currentPosition.longitude += lonDelta;
     this.updatePositionDisplay();
+    this.regenerateMap();
 
-    // Visual feedback
+    // Walking animation
     this.tweens.add({
       targets: this.playerMarker,
-      x: this.playerMarker.x + Phaser.Math.Between(-20, 20),
-      y: this.playerMarker.y + Phaser.Math.Between(-20, 20),
-      duration: 300,
-      ease: 'Quad.easeOut',
+      scaleX: 0.9,
+      duration: 100,
+      yoyo: true,
     });
   }
 
@@ -319,19 +707,28 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private onGeolocationUpdate(position: GeolocationPosition): void {
-    if (this.isDebugMode) return; // Ignore GPS when in debug mode
+    if (this.isDebugMode) return;
+
+    const oldLat = this.currentPosition.latitude;
+    const oldLon = this.currentPosition.longitude;
 
     this.currentPosition = {
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
       accuracy: position.coords.accuracy,
     };
+
     this.updatePositionDisplay();
+
+    // Regenerate map if position changed significantly
+    if (Math.abs(oldLat - this.currentPosition.latitude) > 0.0001 ||
+        Math.abs(oldLon - this.currentPosition.longitude) > 0.0001) {
+      this.regenerateMap();
+    }
   }
 
   private onGeolocationError(error: GeolocationPositionError): void {
     console.error('Geolocation error:', error.message);
-    // Enable debug mode on error
     if (!this.isDebugMode) {
       this.isDebugMode = true;
       this.debugContainer.setVisible(true);
@@ -344,8 +741,7 @@ export class WorldScene extends Phaser.Scene {
     );
   }
 
-  private onResourceTap(marker: Phaser.GameObjects.Sprite): void {
-    // Calculate distance (simplified - would use haversine in production)
+  private onResourceTap(marker: Phaser.GameObjects.Container): void {
     const distance = Phaser.Math.Distance.Between(
       this.playerMarker.x,
       this.playerMarker.y,
@@ -353,29 +749,46 @@ export class WorldScene extends Phaser.Scene {
       marker.y
     );
 
-    if (distance < 100) {
-      // Within range - collect resource
+    if (distance < 80) {
+      // Chest opening animation
       this.tweens.add({
         targets: marker,
-        scale: 0,
-        alpha: 0,
-        duration: 300,
+        scaleY: 1.3,
+        duration: 150,
+        yoyo: true,
         onComplete: () => {
+          // Sparkle burst
+          for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            const sparkle = this.add.circle(
+              marker.x + Math.cos(angle) * 5,
+              marker.y + Math.sin(angle) * 5,
+              3,
+              0xffff00
+            );
+            this.tweens.add({
+              targets: sparkle,
+              x: marker.x + Math.cos(angle) * 30,
+              y: marker.y + Math.sin(angle) * 30,
+              alpha: 0,
+              duration: 400,
+              onComplete: () => sparkle.destroy(),
+            });
+          }
+
           marker.destroy();
           const index = this.resourceMarkers.indexOf(marker);
           if (index > -1) this.resourceMarkers.splice(index, 1);
         },
       });
 
-      // Emit event for UI
       this.events.emit('resource-collected', { type: 'gold', amount: 50 });
     } else {
-      // Out of range feedback
       this.cameras.main.shake(100, 0.005);
     }
   }
 
-  private onDungeonTap(marker: Phaser.GameObjects.Sprite): void {
+  private onDungeonTap(marker: Phaser.GameObjects.Container): void {
     const distance = Phaser.Math.Distance.Between(
       this.playerMarker.x,
       this.playerMarker.y,
@@ -383,8 +796,8 @@ export class WorldScene extends Phaser.Scene {
       marker.y
     );
 
-    if (distance < 100) {
-      // Enter dungeon - transition to battle
+    if (distance < 80) {
+      // Screen transition effect
       this.cameras.main.fadeOut(500, 0, 0, 0, (_camera: Phaser.Cameras.Scene2D.Camera, progress: number) => {
         if (progress === 1) {
           this.scene.start('BattleScene');
@@ -396,7 +809,6 @@ export class WorldScene extends Phaser.Scene {
   }
 
   shutdown(): void {
-    // Clean up geolocation watcher
     if (this.watchId !== null) {
       navigator.geolocation.clearWatch(this.watchId);
     }
