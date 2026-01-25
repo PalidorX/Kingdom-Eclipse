@@ -5,7 +5,7 @@ import {
   GAME_HEIGHT,
   KINGDOM_GRID_SIZE,
   TILE_SIZE,
-} from '../config/GameConfig';
+} from '../config/constants';
 
 interface GridTile {
   x: number;

@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_WIDTH, GAME_HEIGHT } from '../config/GameConfig';
+import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
 
 interface GeoPosition {
   latitude: number;

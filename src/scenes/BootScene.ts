@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_WIDTH, GAME_HEIGHT, TILE_SIZE } from '../config/GameConfig';
+import { GAME_WIDTH, GAME_HEIGHT, TILE_SIZE } from '../config/constants';
 
 export class BootScene extends Phaser.Scene {
   constructor() {

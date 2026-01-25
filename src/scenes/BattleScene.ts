@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
-import { GAME_WIDTH, GAME_HEIGHT, BATTLE_GRID_SIZE } from '../config/GameConfig';
+import { GAME_WIDTH, GAME_HEIGHT, BATTLE_GRID_SIZE } from '../config/constants';
 
 type BattlePhase = 'setup' | 'combat' | 'victory' | 'defeat';
 

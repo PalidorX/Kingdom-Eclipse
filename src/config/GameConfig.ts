@@ -4,15 +4,10 @@ import { WorldScene } from '../scenes/WorldScene';
 import { KingdomScene } from '../scenes/KingdomScene';
 import { BattleScene } from '../scenes/BattleScene';
 import { UIScene } from '../scenes/UIScene';
+import { GAME_WIDTH, GAME_HEIGHT } from './constants';
 
-// Base resolution for mobile portrait mode
-export const GAME_WIDTH = 375;
-export const GAME_HEIGHT = 667;
-
-// Grid constants
-export const KINGDOM_GRID_SIZE = 128;
-export const BATTLE_GRID_SIZE = 8;
-export const TILE_SIZE = 16;
+// Re-export constants for convenience
+export { GAME_WIDTH, GAME_HEIGHT, KINGDOM_GRID_SIZE, BATTLE_GRID_SIZE, TILE_SIZE } from './constants';
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
