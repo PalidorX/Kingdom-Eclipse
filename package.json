@@ -1,0 +1,27 @@
+{
+  "name": "kingdom-eclipse",
+  "version": "1.0.0",
+  "description": "A location-based mobile game blending Kingdom Building with Tactical Auto-Battles",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:62006/git/PalidorX/Kingdom-Eclipse"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "easystarjs": "^0.4.4",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}
