@@ -38,7 +38,7 @@ export const GameConfig: Phaser.Types.Core.GameConfig = {
     activePointers: 3, // Support multi-touch for pinch-zoom
   },
   scene: [BootScene, WorldScene, KingdomScene, BattleScene, UIScene],
-  pixelArt: true,
-  antialias: false,
-  roundPixels: true,
+  pixelArt: false,
+  antialias: true,
+  roundPixels: false,
 };
