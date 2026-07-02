@@ -1,137 +1,217 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
-import {
-  GAME_WIDTH,
-  GAME_HEIGHT,
-  KINGDOM_GRID_SIZE,
-  TILE_SIZE,
-} from '../config/GameConfig';
+import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
+import { CharacterManager } from '../rendering/CharacterManager';
+import { CharacterTeam } from '../rendering/Character3D';
+
+// RPG Maker style - 32x32 tiles, characters are 2 tiles tall
+const TILE_SIZE = 32;
+const GRID_COLS = Math.ceil(GAME_WIDTH / TILE_SIZE) + 4;
+const GRID_ROWS = Math.ceil(GAME_HEIGHT / TILE_SIZE) + 4;
+
+// RPG Maker style color palette
+const PALETTE = {
+  // Grass
+  grass1: 0x5cb85c,
+  grass2: 0x4ca84c,
+  grass3: 0x6cc86c,
+  grassDark: 0x3c983c,
+
+  // Dirt/Path
+  path1: 0xc4a574,
+  path2: 0xb49564,
+  path3: 0xd4b584,
+  pathEdge: 0xa48554,
+
+  // Water
+  water1: 0x4488cc,
+  water2: 0x5498dc,
+  water3: 0x3478bc,
+
+  // Buildings
+  roofRed: 0xcc4444,
+  roofBlue: 0x4466cc,
+  roofGreen: 0x44aa44,
+  roofBrown: 0x886644,
+  wallLight: 0xf0e8d8,
+  wallMed: 0xd8d0c0,
+  wallDark: 0xb8b0a0,
+  wood: 0x8b6914,
+  woodDark: 0x5b4904,
+  door: 0x6b4914,
+  window: 0x88ccff,
+  windowShine: 0xaaeeff,
+
+  // Trees
+  treeTrunk: 0x6b4423,
+  treeLeaf1: 0x228b22,
+  treeLeaf2: 0x2e8b2e,
+  treeLeaf3: 0x3c9b3c,
+  treeHighlight: 0x4cbb4c,
+  treeShadow: 0x1a6b1a,
+
+  // Characters
+  skin: 0xffd8b8,
+  skinShadow: 0xe8c8a8,
+  hair: 0x4a3728,
+  hairLight: 0x5a4738,
+};
 
 interface GridTile {
   x: number;
   y: number;
-  type: string;
+  type: 'grass' | 'path' | 'water' | 'building';
   walkable: boolean;
-  building: string | null;
+  buildingId: string | null;
 }
 
 interface Building {
   id: string;
   type: string;
+  name: string;
   gridX: number;
   gridY: number;
   width: number;
   height: number;
-  sprite: Phaser.GameObjects.Sprite;
+  level: number;
+  container: Phaser.GameObjects.Container;
 }
 
-interface Visitor {
+interface Character {
   id: string;
-  sprite: Phaser.GameObjects.Sprite;
-  targetX: number;
-  targetY: number;
+  name: string;
+  type: 'hero' | 'visitor' | 'villager';
+  gridX: number;
+  gridY: number;
+  labelContainer: Phaser.GameObjects.Container; // For name label only
   path: { x: number; y: number }[];
   pathIndex: number;
+  isMoving: boolean;
+  direction: 'down' | 'up' | 'left' | 'right';
 }
 
 export class KingdomScene extends Phaser.Scene {
   private grid: GridTile[][] = [];
-  private gridGraphics!: Phaser.GameObjects.Graphics;
   private buildings: Building[] = [];
-  private visitors: Visitor[] = [];
+  private characters: Character[] = [];
   private pathfinder!: EasyStar.js;
+  private groundLayer!: Phaser.GameObjects.Container;
+  private objectLayer!: Phaser.GameObjects.Container;
+  private characterLayer!: Phaser.GameObjects.Container;
+  private uiLayer!: Phaser.GameObjects.Container;
+  private infoPanel: Phaser.GameObjects.Container | null = null;
 
-  // Camera controls
-  private isDragging: boolean = false;
-  private dragStartX: number = 0;
-  private dragStartY: number = 0;
-  private lastPointerDistance: number = 0;
-  private minZoom: number = 0.25;
-  private maxZoom: number = 2;
+  private isDragging = false;
+  private dragStartX = 0;
+  private dragStartY = 0;
+  private cameraX = 0;
+  private cameraY = 0;
 
-  // Map dimensions
-  private mapWidth: number = KINGDOM_GRID_SIZE * TILE_SIZE;
-  private mapHeight: number = KINGDOM_GRID_SIZE * TILE_SIZE;
-
-  // Building placement mode
-  private isPlacementMode: boolean = false;
-  private placementPreview: Phaser.GameObjects.Sprite | null = null;
-  private selectedBuildingType: string | null = null;
+  // 3D Character rendering
+  private characterManager!: CharacterManager;
 
   constructor() {
     super({ key: 'KingdomScene' });
   }
 
   create(): void {
+    // Initialize 3D character manager
+    this.characterManager = new CharacterManager();
+
+    this.groundLayer = this.add.container(0, 0);
+    this.objectLayer = this.add.container(0, 0);
+    this.characterLayer = this.add.container(0, 0);
+    this.uiLayer = this.add.container(0, 0);
+
+    this.cameraX = GAME_WIDTH / 2 - (GRID_COLS * TILE_SIZE) / 2;
+    this.cameraY = 60;
+    this.updateCameraPosition();
+
     this.initializeGrid();
     this.initializePathfinder();
-    this.createTilemap();
-    this.setupCamera();
-    this.setupInputHandlers();
-    this.createDefaultBuildings();
+    this.drawGround();
+    this.createBuildings();
+    this.createTrees();
+    this.createCharacters();
+    this.setupInput();
     this.createUI();
 
-    // Start visitor spawning
     this.time.addEvent({
-      delay: 10000,
-      callback: this.spawnVisitor,
-      callbackScope: this,
+      delay: 12000,
+      callback: () => this.spawnVisitor(),
       loop: true,
     });
 
-    // Spawn initial visitor after short delay
     this.time.delayedCall(2000, () => this.spawnVisitor());
+  }
 
-    // Launch UI scene
-    this.scene.launch('UIScene');
+  shutdown(): void {
+    // Clean up 3D resources when scene shuts down
+    if (this.characterManager) {
+      this.characterManager.clear();
+    }
+  }
+
+  private updateCameraPosition(): void {
+    this.groundLayer.setPosition(this.cameraX, this.cameraY);
+    this.objectLayer.setPosition(this.cameraX, this.cameraY);
+    this.characterLayer.setPosition(this.cameraX, this.cameraY);
+
+    // Sync 3D character positions with camera offset
+    if (this.characterManager) {
+      this.characterManager.setCameraOffset(this.cameraX, this.cameraY);
+    }
   }
 
   private initializeGrid(): void {
     this.grid = [];
-    for (let y = 0; y < KINGDOM_GRID_SIZE; y++) {
+    for (let y = 0; y < GRID_ROWS; y++) {
       this.grid[y] = [];
-      for (let x = 0; x < KINGDOM_GRID_SIZE; x++) {
+      for (let x = 0; x < GRID_COLS; x++) {
         this.grid[y][x] = {
-          x,
-          y,
+          x, y,
           type: 'grass',
           walkable: true,
-          building: null,
+          buildingId: null,
         };
       }
     }
-
-    // Create some varied terrain
-    this.generateTerrain();
+    this.createPaths();
+    this.createWater();
   }
 
-  private generateTerrain(): void {
-    // Add paths from gate to center
-    const centerX = Math.floor(KINGDOM_GRID_SIZE / 2);
-    const centerY = Math.floor(KINGDOM_GRID_SIZE / 2);
-
-    // Vertical path from gate (bottom center) to center
-    for (let y = KINGDOM_GRID_SIZE - 1; y >= centerY; y--) {
-      this.grid[y][centerX].type = 'path';
+  private createPaths(): void {
+    // Main horizontal road
+    for (let x = 1; x < GRID_COLS - 1; x++) {
+      for (let y = 8; y <= 10; y++) {
+        if (this.grid[y]) this.grid[y][x].type = 'path';
+      }
     }
-
-    // Horizontal path through center
-    for (let x = 20; x < KINGDOM_GRID_SIZE - 20; x++) {
-      this.grid[centerY][x].type = 'path';
+    // Main vertical road
+    for (let y = 1; y < GRID_ROWS - 1; y++) {
+      for (let x = 6; x <= 8; x++) {
+        if (this.grid[y] && this.grid[y][x]) this.grid[y][x].type = 'path';
+      }
     }
+    // Side paths
+    for (let x = 2; x <= 5; x++) {
+      for (let y = 4; y <= 5; y++) {
+        if (this.grid[y]) this.grid[y][x].type = 'path';
+      }
+    }
+    for (let x = 9; x <= 12; x++) {
+      for (let y = 4; y <= 5; y++) {
+        if (this.grid[y]) this.grid[y][x].type = 'path';
+      }
+    }
+  }
 
-    // Add some water features
-    for (let i = 0; i < 3; i++) {
-      const pondX = Phaser.Math.Between(20, KINGDOM_GRID_SIZE - 30);
-      const pondY = Phaser.Math.Between(20, KINGDOM_GRID_SIZE - 30);
-      const pondSize = Phaser.Math.Between(3, 6);
-
-      for (let dy = 0; dy < pondSize; dy++) {
-        for (let dx = 0; dx < pondSize; dx++) {
-          if (pondY + dy < KINGDOM_GRID_SIZE && pondX + dx < KINGDOM_GRID_SIZE) {
-            this.grid[pondY + dy][pondX + dx].type = 'water';
-            this.grid[pondY + dy][pondX + dx].walkable = false;
-          }
+  private createWater(): void {
+    for (let y = 14; y <= 16; y++) {
+      for (let x = 10; x <= 13; x++) {
+        if (this.grid[y] && this.grid[y][x]) {
+          this.grid[y][x].type = 'water';
+          this.grid[y][x].walkable = false;
         }
       }
     }
@@ -139,432 +219,845 @@ export class KingdomScene extends Phaser.Scene {
 
   private initializePathfinder(): void {
     this.pathfinder = new EasyStar.js();
-
-    // Create walkability grid
-    const walkableGrid: number[][] = [];
-    for (let y = 0; y < KINGDOM_GRID_SIZE; y++) {
-      walkableGrid[y] = [];
-      for (let x = 0; x < KINGDOM_GRID_SIZE; x++) {
-        walkableGrid[y][x] = this.grid[y][x].walkable ? 0 : 1;
-      }
-    }
-
-    this.pathfinder.setGrid(walkableGrid);
-    this.pathfinder.setAcceptableTiles([0]);
-    this.pathfinder.enableDiagonals();
-    this.pathfinder.enableCornerCutting();
-  }
-
-  private createTilemap(): void {
-    this.gridGraphics = this.add.graphics();
-
-    for (let y = 0; y < KINGDOM_GRID_SIZE; y++) {
-      for (let x = 0; x < KINGDOM_GRID_SIZE; x++) {
-        const tile = this.grid[y][x];
-        const worldX = x * TILE_SIZE;
-        const worldY = y * TILE_SIZE;
-
-        // Draw tile based on type
-        let color: number;
-        switch (tile.type) {
-          case 'path':
-            color = 0xc4a35a;
-            break;
-          case 'water':
-            color = 0x3b7cb5;
-            break;
-          case 'stone':
-            color = 0x6b6b6b;
-            break;
-          default:
-            color = 0x4a7c3f;
-        }
-
-        this.gridGraphics.fillStyle(color, 1);
-        this.gridGraphics.fillRect(worldX, worldY, TILE_SIZE, TILE_SIZE);
-
-        // Grid lines (subtle)
-        this.gridGraphics.lineStyle(1, 0x000000, 0.1);
-        this.gridGraphics.strokeRect(worldX, worldY, TILE_SIZE, TILE_SIZE);
-      }
-    }
-  }
-
-  private setupCamera(): void {
-    const cam = this.cameras.main;
-
-    // Set camera bounds to the full map
-    cam.setBounds(0, 0, this.mapWidth, this.mapHeight);
-
-    // Set initial zoom to show a reasonable area
-    cam.setZoom(1);
-
-    // Center camera on the kingdom center
-    cam.centerOn(this.mapWidth / 2, this.mapHeight / 2);
-  }
-
-  private setupInputHandlers(): void {
-    // Pan/drag handling
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.leftButtonDown()) {
-        this.isDragging = true;
-        this.dragStartX = pointer.x;
-        this.dragStartY = pointer.y;
-      }
-    });
-
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (this.isDragging && pointer.leftButtonDown()) {
-        const cam = this.cameras.main;
-        const dx = (this.dragStartX - pointer.x) / cam.zoom;
-        const dy = (this.dragStartY - pointer.y) / cam.zoom;
-
-        cam.scrollX += dx;
-        cam.scrollY += dy;
-
-        this.dragStartX = pointer.x;
-        this.dragStartY = pointer.y;
-      }
-
-      // Pinch-to-zoom detection
-      const pointers = this.input.manager.pointers.filter((p) => p.isDown);
-      if (pointers.length === 2) {
-        const [p1, p2] = pointers;
-        const distance = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
-
-        if (this.lastPointerDistance > 0) {
-          const delta = distance - this.lastPointerDistance;
-          const zoomChange = delta * 0.005;
-          this.zoomCamera(zoomChange);
-        }
-
-        this.lastPointerDistance = distance;
-      }
-
-      // Placement preview
-      if (this.isPlacementMode && this.placementPreview) {
-        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-        const gridX = Math.floor(worldPoint.x / TILE_SIZE);
-        const gridY = Math.floor(worldPoint.y / TILE_SIZE);
-        this.placementPreview.setPosition(
-          gridX * TILE_SIZE + TILE_SIZE,
-          gridY * TILE_SIZE + TILE_SIZE
-        );
-      }
-    });
-
-    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-      this.isDragging = false;
-      this.lastPointerDistance = 0;
-
-      // Handle placement
-      if (this.isPlacementMode && this.selectedBuildingType) {
-        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-        const gridX = Math.floor(worldPoint.x / TILE_SIZE);
-        const gridY = Math.floor(worldPoint.y / TILE_SIZE);
-        this.placeBuilding(this.selectedBuildingType, gridX, gridY);
-      }
-    });
-
-    // Mouse wheel zoom
-    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: unknown, _deltaX: number, deltaY: number) => {
-      const zoomChange = deltaY > 0 ? -0.1 : 0.1;
-      this.zoomCamera(zoomChange);
-    });
-  }
-
-  private zoomCamera(delta: number): void {
-    const cam = this.cameras.main;
-    const newZoom = Phaser.Math.Clamp(cam.zoom + delta, this.minZoom, this.maxZoom);
-    cam.setZoom(newZoom);
-  }
-
-  private createDefaultBuildings(): void {
-    const centerX = Math.floor(KINGDOM_GRID_SIZE / 2);
-    const centerY = Math.floor(KINGDOM_GRID_SIZE / 2);
-
-    // Place gate at bottom center
-    this.placeBuilding('gate', centerX - 1, KINGDOM_GRID_SIZE - 4);
-
-    // Place inn near center
-    this.placeBuilding('inn', centerX - 1, centerY - 1);
-
-    // Place some initial buildings
-    this.placeBuilding('barracks', centerX + 5, centerY - 2);
-    this.placeBuilding('farm', centerX - 8, centerY + 3);
-  }
-
-  private placeBuilding(type: string, gridX: number, gridY: number): boolean {
-    // Get building config
-    const config = this.getBuildingConfig(type);
-    if (!config) return false;
-
-    // Check if area is valid and clear
-    for (let dy = 0; dy < config.height; dy++) {
-      for (let dx = 0; dx < config.width; dx++) {
-        const checkX = gridX + dx;
-        const checkY = gridY + dy;
-
-        if (
-          checkX < 0 ||
-          checkX >= KINGDOM_GRID_SIZE ||
-          checkY < 0 ||
-          checkY >= KINGDOM_GRID_SIZE
-        ) {
-          return false;
-        }
-
-        if (this.grid[checkY][checkX].building !== null) {
-          return false;
-        }
-
-        if (!this.grid[checkY][checkX].walkable) {
-          return false;
-        }
-      }
-    }
-
-    // Create building sprite
-    const worldX = gridX * TILE_SIZE + (config.width * TILE_SIZE) / 2;
-    const worldY = gridY * TILE_SIZE + (config.height * TILE_SIZE) / 2;
-
-    const sprite = this.add.sprite(worldX, worldY, `building-${type}`);
-    sprite.setInteractive();
-    sprite.on('pointerdown', () => this.onBuildingTap(type, gridX, gridY));
-
-    // Register building
-    const building: Building = {
-      id: `${type}-${Date.now()}`,
-      type,
-      gridX,
-      gridY,
-      width: config.width,
-      height: config.height,
-      sprite,
-    };
-    this.buildings.push(building);
-
-    // Mark grid cells
-    for (let dy = 0; dy < config.height; dy++) {
-      for (let dx = 0; dx < config.width; dx++) {
-        this.grid[gridY + dy][gridX + dx].building = building.id;
-        this.grid[gridY + dy][gridX + dx].walkable = false;
-      }
-    }
-
-    // Update pathfinder
     this.updatePathfinderGrid();
-
-    return true;
-  }
-
-  private getBuildingConfig(type: string): { width: number; height: number } | null {
-    const configs: Record<string, { width: number; height: number }> = {
-      gate: { width: 2, height: 2 },
-      inn: { width: 2, height: 2 },
-      barracks: { width: 3, height: 3 },
-      farm: { width: 2, height: 2 },
-      mine: { width: 2, height: 2 },
-    };
-    return configs[type] || null;
   }
 
   private updatePathfinderGrid(): void {
     const walkableGrid: number[][] = [];
-    for (let y = 0; y < KINGDOM_GRID_SIZE; y++) {
+    for (let y = 0; y < GRID_ROWS; y++) {
       walkableGrid[y] = [];
-      for (let x = 0; x < KINGDOM_GRID_SIZE; x++) {
-        walkableGrid[y][x] = this.grid[y][x].walkable ? 0 : 1;
+      for (let x = 0; x < GRID_COLS; x++) {
+        walkableGrid[y][x] = this.grid[y]?.[x]?.walkable ? 0 : 1;
       }
     }
     this.pathfinder.setGrid(walkableGrid);
+    this.pathfinder.setAcceptableTiles([0]);
+    this.pathfinder.enableDiagonals();
   }
 
-  private onBuildingTap(type: string, gridX: number, gridY: number): void {
-    // Emit event for UI to show building details
-    this.events.emit('building-selected', { type, gridX, gridY });
-  }
+  private drawGround(): void {
+    const graphics = this.add.graphics();
+    this.groundLayer.add(graphics);
 
-  private spawnVisitor(): void {
-    // Find gate building
-    const gate = this.buildings.find((b) => b.type === 'gate');
-    if (!gate) return;
-
-    // Spawn at gate position
-    const spawnX = gate.gridX * TILE_SIZE + TILE_SIZE;
-    const spawnY = (gate.gridY + gate.height) * TILE_SIZE;
-
-    const sprite = this.add.sprite(spawnX, spawnY, 'char-visitor');
-    sprite.setDepth(50);
-    sprite.setInteractive();
-
-    const visitor: Visitor = {
-      id: `visitor-${Date.now()}`,
-      sprite,
-      targetX: 0,
-      targetY: 0,
-      path: [],
-      pathIndex: 0,
-    };
-
-    sprite.on('pointerdown', () => this.onVisitorTap(visitor));
-
-    this.visitors.push(visitor);
-
-    // Find path to inn
-    const inn = this.buildings.find((b) => b.type === 'inn');
-    if (inn) {
-      this.findPathForVisitor(visitor, inn.gridX, inn.gridY - 1);
+    for (let y = 0; y < GRID_ROWS; y++) {
+      for (let x = 0; x < GRID_COLS; x++) {
+        const tile = this.grid[y]?.[x];
+        if (tile) {
+          const px = x * TILE_SIZE;
+          const py = y * TILE_SIZE;
+          this.drawTile(graphics, px, py, tile.type, x, y);
+        }
+      }
     }
   }
 
-  private findPathForVisitor(visitor: Visitor, targetGridX: number, targetGridY: number): void {
-    const startGridX = Math.floor(visitor.sprite.x / TILE_SIZE);
-    const startGridY = Math.floor(visitor.sprite.y / TILE_SIZE);
+  private drawTile(
+    graphics: Phaser.GameObjects.Graphics,
+    px: number, py: number,
+    type: string,
+    gridX: number, gridY: number
+  ): void {
+    const s = TILE_SIZE;
+    const noise = this.noise(gridX, gridY);
+
+    switch (type) {
+      case 'grass':
+        this.drawGrassTile(graphics, px, py, s, noise, gridX, gridY);
+        break;
+      case 'path':
+        this.drawPathTile(graphics, px, py, s, noise, gridX, gridY);
+        break;
+      case 'water':
+        this.drawWaterTile(graphics, px, py, s, gridX, gridY);
+        break;
+    }
+  }
+
+  private drawGrassTile(
+    graphics: Phaser.GameObjects.Graphics,
+    px: number, py: number, s: number,
+    noise: number, gridX: number, gridY: number
+  ): void {
+    // Base grass color with variation
+    const baseColor = noise > 0.6 ? PALETTE.grass1 : noise > 0.3 ? PALETTE.grass2 : PALETTE.grass3;
+    graphics.fillStyle(baseColor, 1);
+    graphics.fillRect(px, py, s, s);
+
+    // Grass texture pattern (diagonal lines like RPG Maker)
+    graphics.fillStyle(PALETTE.grassDark, 0.15);
+    for (let i = 0; i < 4; i++) {
+      const ox = (gridX * 7 + gridY * 3 + i * 8) % s;
+      const oy = (gridY * 11 + i * 9) % s;
+      graphics.fillRect(px + ox, py + oy, 2, 2);
+    }
+
+    // Random grass tufts
+    if (noise > 0.75) {
+      graphics.fillStyle(PALETTE.grass3, 0.6);
+      graphics.fillRect(px + 8, py + 12, 3, 6);
+      graphics.fillRect(px + 12, py + 10, 2, 8);
+      graphics.fillRect(px + 20, py + 14, 3, 5);
+    }
+
+    // Occasional flowers
+    const flowerNoise = this.noise(gridX * 5, gridY * 7);
+    if (flowerNoise > 0.88) {
+      graphics.fillStyle(0xff6090, 1);
+      graphics.fillCircle(px + 10, py + 20, 3);
+      graphics.fillStyle(0xffff60, 1);
+      graphics.fillCircle(px + 22, py + 8, 2);
+    }
+  }
+
+  private drawPathTile(
+    graphics: Phaser.GameObjects.Graphics,
+    px: number, py: number, s: number,
+    noise: number, gridX: number, gridY: number
+  ): void {
+    // Base path color
+    const baseColor = noise > 0.5 ? PALETTE.path1 : PALETTE.path2;
+    graphics.fillStyle(baseColor, 1);
+    graphics.fillRect(px, py, s, s);
+
+    // Path texture (stone/dirt variation)
+    graphics.fillStyle(PALETTE.path3, 0.4);
+    const stonePattern = [
+      { x: 4, y: 4, w: 8, h: 6 },
+      { x: 16, y: 8, w: 10, h: 7 },
+      { x: 6, y: 18, w: 9, h: 8 },
+      { x: 20, y: 20, w: 7, h: 6 },
+    ];
+    stonePattern.forEach((stone, i) => {
+      const ox = (stone.x + gridX * 3 + i) % 24;
+      const oy = (stone.y + gridY * 5) % 24;
+      graphics.fillRoundedRect(px + ox, py + oy, stone.w, stone.h, 2);
+    });
+
+    // Dark gaps between stones
+    graphics.fillStyle(PALETTE.pathEdge, 0.3);
+    graphics.fillRect(px + 12, py + 2, 1, 10);
+    graphics.fillRect(px + 3, py + 14, 12, 1);
+    graphics.fillRect(px + 18, py + 16, 1, 8);
+
+    // Check for edges and draw borders
+    const hasN = this.grid[gridY - 1]?.[gridX]?.type !== 'path';
+    const hasS = this.grid[gridY + 1]?.[gridX]?.type !== 'path';
+    const hasW = this.grid[gridY]?.[gridX - 1]?.type !== 'path';
+    const hasE = this.grid[gridY]?.[gridX + 1]?.type !== 'path';
+
+    graphics.fillStyle(PALETTE.pathEdge, 0.5);
+    if (hasN) graphics.fillRect(px, py, s, 3);
+    if (hasS) graphics.fillRect(px, py + s - 3, s, 3);
+    if (hasW) graphics.fillRect(px, py, 3, s);
+    if (hasE) graphics.fillRect(px + s - 3, py, 3, s);
+  }
+
+  private drawWaterTile(
+    graphics: Phaser.GameObjects.Graphics,
+    px: number, py: number, s: number,
+    gridX: number, gridY: number
+  ): void {
+    const wave = (Math.sin(gridX * 0.8 + gridY * 0.6) + 1) / 2;
+    const baseColor = wave > 0.5 ? PALETTE.water1 : PALETTE.water2;
+    graphics.fillStyle(baseColor, 1);
+    graphics.fillRect(px, py, s, s);
+
+    // Wave highlights
+    graphics.fillStyle(PALETTE.water3, 0.4);
+    const waveY = ((gridX + gridY) * 7) % 16;
+    graphics.fillRect(px + 4, py + waveY, 24, 3);
+
+    // Shine
+    graphics.fillStyle(0xffffff, 0.15);
+    graphics.fillRect(px + 8, py + 6, 6, 2);
+    graphics.fillRect(px + 18, py + 18, 8, 2);
+  }
+
+  private createBuildings(): void {
+    // Buildings are placed in tile coordinates
+    // Size is in tiles (width x height)
+    this.createBuilding('inn', 'The Golden Crown', 2, 1, 3, 3, PALETTE.roofBrown, 1);
+    this.createBuilding('blacksmith', 'Iron Forge', 9, 1, 3, 2, PALETTE.roofRed, 1);
+    this.createBuilding('shop', 'General Store', 1, 11, 2, 2, PALETTE.roofBlue, 1);
+    this.createBuilding('house1', 'Cottage', 9, 11, 2, 2, PALETTE.roofRed, 1);
+    this.createBuilding('house2', 'Manor', 12, 5, 2, 3, PALETTE.roofBlue, 1);
+    this.createBuilding('house3', 'Cabin', 1, 5, 2, 2, PALETTE.roofGreen, 1);
+  }
+
+  private createBuilding(
+    type: string,
+    name: string,
+    gridX: number,
+    gridY: number,
+    width: number,
+    height: number,
+    roofColor: number,
+    level: number
+  ): void {
+    const px = gridX * TILE_SIZE;
+    const py = gridY * TILE_SIZE;
+    const pxW = width * TILE_SIZE;
+    const pxH = height * TILE_SIZE;
+
+    // Mark grid as occupied
+    for (let dy = 0; dy < height; dy++) {
+      for (let dx = 0; dx < width; dx++) {
+        if (this.grid[gridY + dy]?.[gridX + dx]) {
+          this.grid[gridY + dy][gridX + dx].buildingId = type;
+          this.grid[gridY + dy][gridX + dx].walkable = false;
+          this.grid[gridY + dy][gridX + dx].type = 'building';
+        }
+      }
+    }
+
+    const container = this.add.container(px, py);
+    this.objectLayer.add(container);
+
+    const graphics = this.add.graphics();
+    container.add(graphics);
+
+    // Building shadow
+    graphics.fillStyle(0x000000, 0.2);
+    graphics.fillRect(4, 8, pxW, pxH - 4);
+
+    // Main wall
+    graphics.fillStyle(PALETTE.wallLight, 1);
+    graphics.fillRect(0, pxH * 0.3, pxW, pxH * 0.7);
+
+    // Wall shading (left darker, right lighter)
+    graphics.fillStyle(PALETTE.wallDark, 1);
+    graphics.fillRect(0, pxH * 0.3, 4, pxH * 0.7);
+    graphics.fillStyle(PALETTE.wallMed, 1);
+    graphics.fillRect(pxW - 4, pxH * 0.3, 4, pxH * 0.7);
+
+    // Roof
+    graphics.fillStyle(roofColor, 1);
+    graphics.fillRect(-4, 0, pxW + 8, pxH * 0.35);
+    // Roof highlight
+    graphics.fillStyle(roofColor + 0x202020, 1);
+    graphics.fillRect(0, 4, pxW, 8);
+    // Roof shadow
+    graphics.fillStyle(roofColor - 0x202020, 1);
+    graphics.fillRect(-4, pxH * 0.3, pxW + 8, 4);
+
+    // Door
+    const doorW = 16;
+    const doorH = 24;
+    const doorX = (pxW - doorW) / 2;
+    const doorY = pxH - doorH;
+    graphics.fillStyle(PALETTE.door, 1);
+    graphics.fillRect(doorX, doorY, doorW, doorH);
+    graphics.fillStyle(PALETTE.woodDark, 1);
+    graphics.fillRect(doorX, doorY, doorW, 3);
+    graphics.fillRect(doorX + doorW / 2 - 1, doorY, 2, doorH);
+    // Door handle
+    graphics.fillStyle(0xdaa520, 1);
+    graphics.fillCircle(doorX + doorW - 5, doorY + doorH / 2, 2);
+
+    // Windows (32x32 style)
+    if (width >= 2) {
+      this.drawWindow(graphics, 8, pxH * 0.4);
+      if (width >= 3) {
+        this.drawWindow(graphics, pxW - 24, pxH * 0.4);
+      }
+    }
+
+    // Name label
+    const label = this.add.text(pxW / 2, -8, name, {
+      fontSize: '10px',
+      color: '#ffffff',
+      backgroundColor: '#000000cc',
+      padding: { x: 4, y: 2 },
+    });
+    label.setOrigin(0.5, 1);
+    label.setVisible(false);
+    container.add(label);
+
+    container.setSize(pxW, pxH);
+    container.setInteractive();
+    container.on('pointerover', () => label.setVisible(true));
+    container.on('pointerout', () => label.setVisible(false));
+    container.on('pointerdown', () => this.showBuildingInfo(type, name, level));
+
+    container.setDepth(py + pxH);
+
+    const building: Building = {
+      id: `${type}-${gridX}-${gridY}`,
+      type, name, gridX, gridY, width, height, level, container,
+    };
+    this.buildings.push(building);
+    this.updatePathfinderGrid();
+  }
+
+  private drawWindow(graphics: Phaser.GameObjects.Graphics, x: number, y: number): void {
+    const w = 16;
+    const h = 16;
+    // Window frame
+    graphics.fillStyle(PALETTE.wood, 1);
+    graphics.fillRect(x - 2, y - 2, w + 4, h + 4);
+    // Window glass
+    graphics.fillStyle(PALETTE.window, 1);
+    graphics.fillRect(x, y, w, h);
+    // Window shine
+    graphics.fillStyle(PALETTE.windowShine, 0.6);
+    graphics.fillRect(x + 2, y + 2, 5, 4);
+    // Window cross
+    graphics.fillStyle(PALETTE.wood, 1);
+    graphics.fillRect(x + w / 2 - 1, y, 2, h);
+    graphics.fillRect(x, y + h / 2 - 1, w, 2);
+  }
+
+  private createTrees(): void {
+    for (let y = 0; y < GRID_ROWS; y++) {
+      for (let x = 0; x < GRID_COLS; x++) {
+        const tile = this.grid[y]?.[x];
+        if (tile?.type === 'grass' && !tile.buildingId) {
+          const n = this.noise(x * 7, y * 11);
+          if (n > 0.82) {
+            this.createTree(x, y);
+          }
+        }
+      }
+    }
+  }
+
+  private createTree(gridX: number, gridY: number): void {
+    const px = gridX * TILE_SIZE + TILE_SIZE / 2;
+    const py = gridY * TILE_SIZE + TILE_SIZE;
+
+    const container = this.add.container(px, py);
+    this.objectLayer.add(container);
+
+    const graphics = this.add.graphics();
+    container.add(graphics);
+
+    // Shadow
+    graphics.fillStyle(0x000000, 0.25);
+    graphics.fillEllipse(0, 4, 28, 10);
+
+    // Trunk (visible below foliage)
+    graphics.fillStyle(PALETTE.treeTrunk, 1);
+    graphics.fillRect(-4, -20, 8, 24);
+    graphics.fillStyle(PALETTE.woodDark, 1);
+    graphics.fillRect(-4, -20, 3, 24);
+
+    // Foliage layers (2 tiles tall = 64px of foliage)
+    // Bottom layer
+    graphics.fillStyle(PALETTE.treeShadow, 1);
+    graphics.fillCircle(0, -24, 18);
+
+    // Middle layer
+    graphics.fillStyle(PALETTE.treeLeaf1, 1);
+    graphics.fillCircle(-6, -32, 14);
+    graphics.fillCircle(6, -32, 14);
+    graphics.fillCircle(0, -28, 16);
+
+    // Top layer
+    graphics.fillStyle(PALETTE.treeLeaf2, 1);
+    graphics.fillCircle(0, -40, 14);
+    graphics.fillCircle(-8, -36, 10);
+    graphics.fillCircle(8, -36, 10);
+
+    // Highlights
+    graphics.fillStyle(PALETTE.treeHighlight, 1);
+    graphics.fillCircle(-4, -44, 6);
+    graphics.fillCircle(-10, -34, 4);
+
+    this.grid[gridY][gridX].walkable = false;
+    container.setDepth(py);
+  }
+
+  private createCharacters(): void {
+    this.createCharacter('hero', 'Your Hero', 'hero', 7, 9);
+    this.createCharacter('villager1', 'Farmer', 'villager', 4, 8);
+    this.createCharacter('villager2', 'Guard', 'villager', 10, 9);
+  }
+
+  private createCharacter(
+    id: string,
+    name: string,
+    type: 'hero' | 'visitor' | 'villager',
+    gridX: number,
+    gridY: number
+  ): Character {
+    const px = gridX * TILE_SIZE + TILE_SIZE / 2;
+    const py = gridY * TILE_SIZE + TILE_SIZE;
+
+    // Create 3D character
+    const team: CharacterTeam = type === 'hero' ? 'player' : type === 'visitor' ? 'neutral' : 'neutral';
+    const char3D = this.characterManager.createCharacter(
+      id,
+      team,
+      px + this.cameraX,
+      py + this.cameraY,
+      type === 'hero' // Only hero gets full equipment
+    );
+
+    // Give visitors a sword
+    if (type === 'visitor') {
+      char3D.equipSword();
+    }
+
+    // Create label container (for hover labels - positioned in 2D)
+    const labelContainer = this.add.container(px, py - 40);
+    this.characterLayer.add(labelContainer);
+
+    const label = this.add.text(0, 0, name, {
+      fontSize: '9px',
+      color: '#ffffff',
+      backgroundColor: '#000000cc',
+      padding: { x: 3, y: 2 },
+    });
+    label.setOrigin(0.5, 1);
+    label.setVisible(false);
+    labelContainer.add(label);
+
+    // Create invisible hitbox for interaction
+    const hitbox = this.add.rectangle(px, py - 20, TILE_SIZE, TILE_SIZE * 2, 0x000000, 0);
+    this.characterLayer.add(hitbox);
+    hitbox.setInteractive();
+    hitbox.on('pointerover', () => label.setVisible(true));
+    hitbox.on('pointerout', () => label.setVisible(false));
+    hitbox.on('pointerdown', () => this.showCharacterInfo(id, name, type));
+
+    // Store hitbox reference in label container for position updates
+    labelContainer.setData('hitbox', hitbox);
+
+    const character: Character = {
+      id, name, type, gridX, gridY, labelContainer,
+      path: [], pathIndex: 0, isMoving: false, direction: 'down',
+    };
+    this.characters.push(character);
+
+    if (type === 'villager') {
+      this.time.addEvent({
+        delay: 5000 + Math.random() * 5000,
+        callback: () => this.wanderCharacter(character),
+        loop: true,
+      });
+    }
+
+    return character;
+  }
+
+  private wanderCharacter(character: Character): void {
+    if (character.isMoving) return;
+
+    const dx = Math.floor(Math.random() * 5) - 2;
+    const dy = Math.floor(Math.random() * 5) - 2;
+    const newX = Phaser.Math.Clamp(character.gridX + dx, 1, GRID_COLS - 2);
+    const newY = Phaser.Math.Clamp(character.gridY + dy, 1, GRID_ROWS - 2);
+
+    if (this.grid[newY]?.[newX]?.walkable) {
+      this.moveCharacterTo(character, newX, newY);
+    }
+  }
+
+  private spawnVisitor(): void {
+    const id = `visitor-${Date.now()}`;
+    const names = ['Traveler', 'Wanderer', 'Knight', 'Mage', 'Ranger'];
+    const name = Phaser.Utils.Array.GetRandom(names);
+
+    const visitor = this.createCharacter(id, name, 'visitor', 7, 1);
+
+    const inn = this.buildings.find(b => b.type === 'inn');
+    if (inn) {
+      this.time.delayedCall(500, () => {
+        this.moveCharacterTo(visitor, inn.gridX + 1, inn.gridY + inn.height + 1);
+      });
+    }
+  }
+
+  private moveCharacterTo(character: Character, targetX: number, targetY: number): void {
+    if (character.isMoving) return;
 
     this.pathfinder.findPath(
-      startGridX,
-      startGridY,
-      targetGridX,
-      targetGridY,
+      character.gridX, character.gridY,
+      targetX, targetY,
       (path) => {
-        if (path && path.length > 0) {
-          visitor.path = path;
-          visitor.pathIndex = 0;
-          this.moveVisitorAlongPath(visitor);
+        if (path && path.length > 1) {
+          character.path = path;
+          character.pathIndex = 1;
+          character.isMoving = true;
+          this.moveAlongPath(character);
         }
       }
     );
     this.pathfinder.calculate();
   }
 
-  private moveVisitorAlongPath(visitor: Visitor): void {
-    if (visitor.pathIndex >= visitor.path.length) {
-      // Reached destination
-      this.onVisitorArrived(visitor);
+  private moveAlongPath(character: Character): void {
+    if (character.pathIndex >= character.path.length) {
+      character.isMoving = false;
+      this.characterManager.setCharacterWalking(character.id, false);
       return;
     }
 
-    const nextTile = visitor.path[visitor.pathIndex];
-    const targetX = nextTile.x * TILE_SIZE + TILE_SIZE / 2;
-    const targetY = nextTile.y * TILE_SIZE + TILE_SIZE / 2;
+    const next = character.path[character.pathIndex];
+    const px = next.x * TILE_SIZE + TILE_SIZE / 2;
+    const py = next.y * TILE_SIZE + TILE_SIZE;
 
+    const dx = next.x - character.gridX;
+    const dy = next.y - character.gridY;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      character.direction = dx > 0 ? 'right' : 'left';
+    } else {
+      character.direction = dy > 0 ? 'down' : 'up';
+    }
+
+    // Update 3D character facing and walking
+    this.characterManager.setCharacterFacing(character.id, character.direction === 'right' || character.direction === 'down');
+    this.characterManager.setCharacterWalking(character.id, true);
+
+    // Get hitbox from label container
+    const hitbox = character.labelContainer.getData('hitbox') as Phaser.GameObjects.Rectangle;
+
+    // Animate label container
     this.tweens.add({
-      targets: visitor.sprite,
-      x: targetX,
-      y: targetY,
-      duration: 200,
+      targets: character.labelContainer,
+      x: px,
+      y: py - 40,
+      duration: 250,
+      onUpdate: () => {
+        // Sync 3D character position during tween
+        this.characterManager.setCharacterPosition(
+          character.id,
+          character.labelContainer.x + this.cameraX,
+          character.labelContainer.y + 40 + this.cameraY
+        );
+      },
       onComplete: () => {
-        visitor.pathIndex++;
-        this.moveVisitorAlongPath(visitor);
+        character.gridX = next.x;
+        character.gridY = next.y;
+        character.pathIndex++;
+        this.moveAlongPath(character);
       },
     });
-  }
 
-  private onVisitorArrived(visitor: Visitor): void {
-    // Visitor reached the inn - idle animation
+    // Animate hitbox separately
     this.tweens.add({
-      targets: visitor.sprite,
-      y: visitor.sprite.y - 5,
-      duration: 500,
-      yoyo: true,
-      repeat: -1,
+      targets: hitbox,
+      x: px,
+      y: py - 20,
+      duration: 250,
     });
   }
 
-  private onVisitorTap(visitor: Visitor): void {
-    // Emit event for UI to show visitor details / recruitment dialog
-    this.events.emit('visitor-selected', {
-      id: visitor.id,
-      x: visitor.sprite.x,
-      y: visitor.sprite.y,
+  private setupInput(): void {
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.isDragging = true;
+      this.dragStartX = pointer.x;
+      this.dragStartY = pointer.y;
+    });
+
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (this.isDragging && pointer.isDown) {
+        const dx = pointer.x - this.dragStartX;
+        const dy = pointer.y - this.dragStartY;
+
+        this.cameraX += dx;
+        this.cameraY += dy;
+
+        const mapW = GRID_COLS * TILE_SIZE;
+        const mapH = GRID_ROWS * TILE_SIZE;
+        this.cameraX = Phaser.Math.Clamp(this.cameraX, -mapW + 150, GAME_WIDTH - 150);
+        this.cameraY = Phaser.Math.Clamp(this.cameraY, -mapH + 200, GAME_HEIGHT - 100);
+
+        this.updateCameraPosition();
+
+        this.dragStartX = pointer.x;
+        this.dragStartY = pointer.y;
+      }
+    });
+
+    this.input.on('pointerup', () => {
+      this.isDragging = false;
     });
   }
 
-  private createUI(): void {
-    // Create fixed UI elements that stay on screen
+  private showBuildingInfo(type: string, name: string, level: number): void {
+    this.hideInfoPanel();
 
-    // Zoom controls
-    const zoomInBtn = this.add.text(GAME_WIDTH - 40, GAME_HEIGHT / 2 - 30, '+', {
-      fontSize: '24px',
-      color: '#ffffff',
-      backgroundColor: '#333333',
-      padding: { x: 8, y: 4 },
-    });
-    zoomInBtn.setScrollFactor(0);
-    zoomInBtn.setDepth(1000);
-    zoomInBtn.setInteractive();
-    zoomInBtn.on('pointerdown', () => this.zoomCamera(0.2));
+    const building = this.buildings.find(b => b.type === type);
+    const production = type === 'inn' ? '15 gold/min' :
+                       type === 'blacksmith' ? '5 weapons/hr' :
+                       type === 'shop' ? '20 gold/min' : '10 food/min';
 
-    const zoomOutBtn = this.add.text(GAME_WIDTH - 40, GAME_HEIGHT / 2 + 10, '-', {
-      fontSize: '24px',
-      color: '#ffffff',
-      backgroundColor: '#333333',
-      padding: { x: 10, y: 4 },
-    });
-    zoomOutBtn.setScrollFactor(0);
-    zoomOutBtn.setDepth(1000);
-    zoomOutBtn.setInteractive();
-    zoomOutBtn.on('pointerdown', () => this.zoomCamera(-0.2));
+    this.infoPanel = this.add.container(0, GAME_HEIGHT);
+    this.uiLayer.add(this.infoPanel);
 
-    // Navigation header
-    const headerBg = this.add.graphics();
-    headerBg.fillStyle(0x1a1a2e, 0.9);
-    headerBg.fillRect(0, 0, GAME_WIDTH, 50);
-    headerBg.setScrollFactor(0);
-    headerBg.setDepth(999);
+    const panelH = 180;
+    const bg = this.add.graphics();
+    bg.fillStyle(0x1a2040, 0.98);
+    bg.fillRoundedRect(10, -panelH, GAME_WIDTH - 20, panelH - 10, 12);
+    bg.lineStyle(2, 0x4080c0, 1);
+    bg.strokeRoundedRect(10, -panelH, GAME_WIDTH - 20, panelH - 10, 12);
+    this.infoPanel.add(bg);
 
-    const title = this.add.text(GAME_WIDTH / 2, 25, 'Kingdom', {
-      fontSize: '20px',
+    const titleText = this.add.text(25, -panelH + 18, name, {
+      fontSize: '18px',
       color: '#ffffff',
       fontStyle: 'bold',
     });
-    title.setOrigin(0.5);
-    title.setScrollFactor(0);
-    title.setDepth(1000);
+    this.infoPanel.add(titleText);
 
-    // Back button
-    const backBtn = this.add.text(20, 25, '< World', {
-      fontSize: '14px',
-      color: '#4a90d9',
+    const closeBtn = this.add.text(GAME_WIDTH - 35, -panelH + 15, 'X', {
+      fontSize: '20px',
+      color: '#ff6666',
     });
-    backBtn.setOrigin(0, 0.5);
-    backBtn.setScrollFactor(0);
-    backBtn.setDepth(1000);
-    backBtn.setInteractive();
-    backBtn.on('pointerdown', () => this.scene.start('WorldScene'));
+    closeBtn.setInteractive();
+    closeBtn.on('pointerdown', () => this.hideInfoPanel());
+    this.infoPanel.add(closeBtn);
 
-    // Build button
-    const buildBtn = this.add.text(GAME_WIDTH - 20, 25, 'Build', {
-      fontSize: '14px',
-      color: '#32cd32',
+    const levelText = this.add.text(25, -panelH + 48, `Level ${level}`, {
+      fontSize: '13px',
+      color: '#888899',
     });
-    buildBtn.setOrigin(1, 0.5);
-    buildBtn.setScrollFactor(0);
-    buildBtn.setDepth(1000);
-    buildBtn.setInteractive();
-    buildBtn.on('pointerdown', () => this.toggleBuildMode());
+    this.infoPanel.add(levelText);
+
+    const prodText = this.add.text(25, -panelH + 70, `Produces: ${production}`, {
+      fontSize: '14px',
+      color: '#44dd88',
+    });
+    this.infoPanel.add(prodText);
+
+    const costLabel = this.add.text(25, -panelH + 98, 'Upgrade Cost', {
+      fontSize: '13px',
+      color: '#ddaa44',
+    });
+    this.infoPanel.add(costLabel);
+
+    const costs = this.add.text(25, -panelH + 118, `  80      60      20`, {
+      fontSize: '13px',
+      color: '#ffffff',
+    });
+    this.infoPanel.add(costs);
+
+    // Resource icons (simple circles for now)
+    const iconY = -panelH + 122;
+    const goldIcon = this.add.circle(35, iconY, 8, 0xffd700);
+    const woodIcon = this.add.circle(95, iconY, 8, 0xcd853f);
+    const stoneIcon = this.add.circle(155, iconY, 8, 0xaaaaaa);
+    this.infoPanel.add(goldIcon);
+    this.infoPanel.add(woodIcon);
+    this.infoPanel.add(stoneIcon);
+
+    // Upgrade button
+    const btnBg = this.add.graphics();
+    btnBg.fillStyle(0x4488dd, 1);
+    btnBg.fillRoundedRect(25, -50, GAME_WIDTH - 70, 36, 6);
+    this.infoPanel.add(btnBg);
+
+    const btnText = this.add.text(GAME_WIDTH / 2, -32, 'Upgrade', {
+      fontSize: '16px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    });
+    btnText.setOrigin(0.5);
+    this.infoPanel.add(btnText);
+
+    btnBg.setInteractive(new Phaser.Geom.Rectangle(25, -50, GAME_WIDTH - 70, 36), Phaser.Geom.Rectangle.Contains);
+    btnBg.on('pointerdown', () => {
+      if (building) {
+        building.level++;
+        this.showBuildingInfo(type, name, building.level);
+      }
+    });
+
+    // Animate in
+    this.tweens.add({
+      targets: this.infoPanel,
+      y: GAME_HEIGHT,
+      duration: 200,
+      ease: 'Back.easeOut',
+    });
   }
 
-  private toggleBuildMode(): void {
-    this.isPlacementMode = !this.isPlacementMode;
+  private showCharacterInfo(_id: string, name: string, type: string): void {
+    this.hideInfoPanel();
 
-    if (this.isPlacementMode) {
-      // Show building selection (simplified - just place farm for now)
-      this.selectedBuildingType = 'farm';
-      this.placementPreview = this.add.sprite(0, 0, 'building-farm');
-      this.placementPreview.setAlpha(0.5);
-      this.placementPreview.setDepth(100);
-    } else {
-      if (this.placementPreview) {
-        this.placementPreview.destroy();
-        this.placementPreview = null;
-      }
-      this.selectedBuildingType = null;
+    this.infoPanel = this.add.container(0, GAME_HEIGHT);
+    this.uiLayer.add(this.infoPanel);
+
+    const panelH = 140;
+    const bg = this.add.graphics();
+    bg.fillStyle(0x1a2040, 0.98);
+    bg.fillRoundedRect(10, -panelH, GAME_WIDTH - 20, panelH - 10, 12);
+    bg.lineStyle(2, 0x4080c0, 1);
+    bg.strokeRoundedRect(10, -panelH, GAME_WIDTH - 20, panelH - 10, 12);
+    this.infoPanel.add(bg);
+
+    const titleText = this.add.text(25, -panelH + 18, name, {
+      fontSize: '18px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    });
+    this.infoPanel.add(titleText);
+
+    const closeBtn = this.add.text(GAME_WIDTH - 35, -panelH + 15, 'X', {
+      fontSize: '20px',
+      color: '#ff6666',
+    });
+    closeBtn.setInteractive();
+    closeBtn.on('pointerdown', () => this.hideInfoPanel());
+    this.infoPanel.add(closeBtn);
+
+    const typeText = this.add.text(25, -panelH + 48, type.charAt(0).toUpperCase() + type.slice(1), {
+      fontSize: '13px',
+      color: '#888899',
+    });
+    this.infoPanel.add(typeText);
+
+    const desc = type === 'hero' ? 'Your loyal champion. Ready for battle!' :
+                 type === 'visitor' ? 'A traveling adventurer seeking glory.' :
+                 'A peaceful villager of the kingdom.';
+
+    const descText = this.add.text(25, -panelH + 70, desc, {
+      fontSize: '12px',
+      color: '#aabbcc',
+      wordWrap: { width: GAME_WIDTH - 60 },
+    });
+    this.infoPanel.add(descText);
+
+    if (type === 'visitor') {
+      const btnBg = this.add.graphics();
+      btnBg.fillStyle(0x44aa44, 1);
+      btnBg.fillRoundedRect(25, -45, GAME_WIDTH - 70, 32, 6);
+      this.infoPanel.add(btnBg);
+
+      const btnText = this.add.text(GAME_WIDTH / 2, -29, 'Recruit', {
+        fontSize: '14px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      });
+      btnText.setOrigin(0.5);
+      this.infoPanel.add(btnText);
+    }
+
+    this.tweens.add({
+      targets: this.infoPanel,
+      y: GAME_HEIGHT,
+      duration: 200,
+      ease: 'Back.easeOut',
+    });
+  }
+
+  private hideInfoPanel(): void {
+    if (this.infoPanel) {
+      this.infoPanel.destroy();
+      this.infoPanel = null;
     }
   }
 
-  update(): void {
-    // Update logic if needed
+  private createUI(): void {
+    // Header
+    const headerBg = this.add.graphics();
+    headerBg.fillStyle(0x1a2040, 0.95);
+    headerBg.fillRect(0, 0, GAME_WIDTH, 55);
+    headerBg.lineStyle(2, 0x4080c0, 1);
+    headerBg.lineBetween(0, 55, GAME_WIDTH, 55);
+    this.uiLayer.add(headerBg);
+
+    const title = this.add.text(GAME_WIDTH / 2, 16, 'YOUR KINGDOM', {
+      fontSize: '15px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      fontFamily: 'monospace',
+    });
+    title.setOrigin(0.5, 0);
+    this.uiLayer.add(title);
+
+    // Resource bar
+    const resources = [
+      { icon: 0xffd700, value: '550', x: 30 },
+      { icon: 0xcd853f, value: '200', x: 110 },
+      { icon: 0xaaaaaa, value: '150', x: 190 },
+      { icon: 0x88dd44, value: '300', x: 270 },
+    ];
+    resources.forEach(r => {
+      const circle = this.add.circle(r.x, 40, 8, r.icon);
+      this.uiLayer.add(circle);
+      const text = this.add.text(r.x + 14, 40, r.value, {
+        fontSize: '12px',
+        color: '#ffffff',
+      });
+      text.setOrigin(0, 0.5);
+      this.uiLayer.add(text);
+    });
+
+    // Back button
+    const backBtn = this.add.text(12, 16, '< WORLD', {
+      fontSize: '11px',
+      color: '#4488dd',
+      fontFamily: 'monospace',
+    });
+    backBtn.setInteractive();
+    backBtn.on('pointerdown', () => this.scene.start('WorldScene'));
+    backBtn.on('pointerover', () => backBtn.setColor('#88ccff'));
+    backBtn.on('pointerout', () => backBtn.setColor('#4488dd'));
+    this.uiLayer.add(backBtn);
+
+    // Build button
+    const buildBtn = this.add.text(GAME_WIDTH - 12, 16, 'BUILD', {
+      fontSize: '11px',
+      color: '#44aa44',
+      fontFamily: 'monospace',
+    });
+    buildBtn.setOrigin(1, 0);
+    buildBtn.setInteractive();
+    buildBtn.on('pointerover', () => buildBtn.setColor('#88ee88'));
+    buildBtn.on('pointerout', () => buildBtn.setColor('#44aa44'));
+    this.uiLayer.add(buildBtn);
+
+    // Bottom nav
+    const navBg = this.add.graphics();
+    navBg.fillStyle(0x1a2040, 0.95);
+    navBg.fillRect(0, GAME_HEIGHT - 55, GAME_WIDTH, 55);
+    navBg.lineStyle(2, 0x4080c0, 1);
+    navBg.lineBetween(0, GAME_HEIGHT - 55, GAME_WIDTH, GAME_HEIGHT - 55);
+    this.uiLayer.add(navBg);
+
+    this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 28, 'WORLD', false, () => this.scene.start('WorldScene'));
+    this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 28, 'KINGDOM', true);
+    this.createNavButton((GAME_WIDTH / 4) * 3, GAME_HEIGHT - 28, 'BATTLE', false, () => this.scene.start('BattleScene'));
+  }
+
+  private createNavButton(x: number, y: number, label: string, active: boolean, callback?: () => void): void {
+    const bg = this.add.graphics();
+    bg.fillStyle(active ? 0x4080c0 : 0x303050, 1);
+    bg.fillRoundedRect(x - 38, y - 12, 76, 24, 4);
+    this.uiLayer.add(bg);
+
+    const btn = this.add.text(x, y, label, {
+      fontSize: '11px',
+      color: active ? '#ffffff' : '#666688',
+      fontStyle: 'bold',
+      fontFamily: 'monospace',
+    });
+    btn.setOrigin(0.5);
+    this.uiLayer.add(btn);
+
+    if (callback) {
+      bg.setInteractive(new Phaser.Geom.Rectangle(x - 38, y - 12, 76, 24), Phaser.Geom.Rectangle.Contains);
+      bg.on('pointerdown', callback);
+    }
+  }
+
+  private noise(x: number, y: number): number {
+    const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+    return n - Math.floor(n);
+  }
+
+  update(time: number): void {
+    // Update 3D character rendering
+    if (this.characterManager) {
+      this.characterManager.update(time);
+    }
+
+    // Update label depths
+    for (const char of this.characters) {
+      const py = char.gridY * TILE_SIZE + TILE_SIZE;
+      char.labelContainer.setDepth(py);
+    }
   }
 }
