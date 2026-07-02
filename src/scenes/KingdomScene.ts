@@ -2,46 +2,48 @@ import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
 
-// Isometric tile dimensions
-const TILE_WIDTH = 32;
-const TILE_HEIGHT = 16;
-const GRID_SIZE = 24; // 24x24 grid for the village
+// HD-2D style tile dimensions (SNES JRPG / RPG Maker style)
+const TILE_SIZE = 16;
+const GRID_SIZE = 32; // 32x32 grid for the village
 
-// Color palette matching the reference
+// SNES-inspired color palette
 const PALETTE = {
   // Ground
-  grass: 0x5a8f3c,
-  grassDark: 0x4a7f2c,
-  grassLight: 0x6a9f4c,
-  cobblestone: 0x8a8a7a,
-  cobblestoneLight: 0x9a9a8a,
-  cobblestoneDark: 0x6a6a5a,
-  dirt: 0x9a7a5a,
+  grass1: 0x4a8c38,
+  grass2: 0x5a9c48,
+  grass3: 0x3a7c28,
+  path1: 0x9c8860,
+  path2: 0x8c7850,
+  path3: 0xac9870,
+  dirt: 0x8a7050,
 
   // Water
-  water: 0x4a7ab5,
-  waterLight: 0x5a8ac5,
-  waterDark: 0x3a6aa5,
+  water1: 0x3868a8,
+  water2: 0x4878b8,
+  water3: 0x2858a8,
 
   // Buildings
-  roofRed: 0xc04040,
-  roofBlue: 0x4060c0,
-  roofBrown: 0x8a6040,
-  roofPurple: 0x8040a0,
-  wallTan: 0xe0d0b0,
-  wallWhite: 0xf0e8e0,
-  wallBrown: 0xa08060,
-  wood: 0x6a4a30,
-  woodDark: 0x4a3020,
+  roofRed: 0xc84848,
+  roofBlue: 0x4868c8,
+  roofBrown: 0x886848,
+  roofGreen: 0x488848,
+  roofPurple: 0x885888,
+  wallLight: 0xe8d8c8,
+  wallMed: 0xc8b8a8,
+  wallDark: 0xa89888,
+  wood: 0x785838,
+  woodDark: 0x583828,
+  door: 0x684830,
 
   // Foliage
-  treeDark: 0x2a5a20,
-  tree: 0x3a7a30,
-  treeLight: 0x4a9a40,
+  tree1: 0x287828,
+  tree2: 0x388838,
+  tree3: 0x489848,
+  treeTrunk: 0x684828,
 
   // Characters
-  skinTone: 0xffd8b0,
-  hair: 0x5a3a20,
+  skin: 0xf8c8a8,
+  hair: 0x483828,
 };
 
 interface GridTile {
@@ -73,6 +75,7 @@ interface Character {
   path: { x: number; y: number }[];
   pathIndex: number;
   isMoving: boolean;
+  direction: 'down' | 'up' | 'left' | 'right';
 }
 
 export class KingdomScene extends Phaser.Scene {
@@ -80,43 +83,61 @@ export class KingdomScene extends Phaser.Scene {
   private buildings: Building[] = [];
   private characters: Character[] = [];
   private pathfinder!: EasyStar.js;
-  private mapContainer!: Phaser.GameObjects.Container;
+  private groundLayer!: Phaser.GameObjects.Container;
+  private objectLayer!: Phaser.GameObjects.Container;
+  private characterLayer!: Phaser.GameObjects.Container;
+  private roofLayer!: Phaser.GameObjects.Container;
+  private uiLayer!: Phaser.GameObjects.Container;
 
   // Camera/pan
   private isDragging = false;
   private dragStartX = 0;
   private dragStartY = 0;
-  private cameraOffsetX = 0;
-  private cameraOffsetY = 0;
+  private cameraX = 0;
+  private cameraY = 0;
 
   constructor() {
     super({ key: 'KingdomScene' });
   }
 
   create(): void {
-    // Center the isometric map
-    this.cameraOffsetX = GAME_WIDTH / 2;
-    this.cameraOffsetY = 100;
+    // Create layers for proper depth sorting (like SNES games)
+    this.groundLayer = this.add.container(0, 0);
+    this.objectLayer = this.add.container(0, 0);
+    this.characterLayer = this.add.container(0, 0);
+    this.roofLayer = this.add.container(0, 0);
+    this.uiLayer = this.add.container(0, 0);
 
-    this.mapContainer = this.add.container(this.cameraOffsetX, this.cameraOffsetY);
+    // Center view on map
+    this.cameraX = GAME_WIDTH / 2 - (GRID_SIZE * TILE_SIZE) / 2;
+    this.cameraY = 60;
+
+    this.updateCameraPosition();
 
     this.initializeGrid();
     this.initializePathfinder();
-    this.drawMap();
+    this.drawGround();
     this.createBuildings();
+    this.createTrees();
     this.createCharacters();
     this.setupInput();
     this.createUI();
 
     // Spawn visitors periodically
     this.time.addEvent({
-      delay: 8000,
+      delay: 10000,
       callback: () => this.spawnVisitor(),
       loop: true,
     });
 
-    // Initial visitor
-    this.time.delayedCall(1000, () => this.spawnVisitor());
+    this.time.delayedCall(2000, () => this.spawnVisitor());
+  }
+
+  private updateCameraPosition(): void {
+    this.groundLayer.setPosition(this.cameraX, this.cameraY);
+    this.objectLayer.setPosition(this.cameraX, this.cameraY);
+    this.characterLayer.setPosition(this.cameraX, this.cameraY);
+    this.roofLayer.setPosition(this.cameraX, this.cameraY);
   }
 
   private initializeGrid(): void {
@@ -132,44 +153,56 @@ export class KingdomScene extends Phaser.Scene {
         };
       }
     }
-
-    // Create cobblestone paths
     this.createPaths();
-
-    // Create water features
     this.createWater();
   }
 
   private createPaths(): void {
-    // Main vertical path through center
-    for (let y = 2; y < GRID_SIZE - 2; y++) {
-      for (let x = 10; x <= 13; x++) {
+    // Main horizontal road
+    for (let x = 2; x < GRID_SIZE - 2; x++) {
+      for (let y = 14; y <= 17; y++) {
         this.grid[y][x].type = 'path';
       }
     }
 
-    // Horizontal path
-    for (let x = 4; x < GRID_SIZE - 4; x++) {
-      for (let y = 10; y <= 12; y++) {
+    // Main vertical road
+    for (let y = 2; y < GRID_SIZE - 2; y++) {
+      for (let x = 14; x <= 17; x++) {
         this.grid[y][x].type = 'path';
       }
     }
 
     // Side paths to buildings
-    for (let y = 6; y <= 9; y++) {
-      this.grid[y][6].type = 'path';
-      this.grid[y][7].type = 'path';
-      this.grid[y][16].type = 'path';
-      this.grid[y][17].type = 'path';
+    for (let x = 6; x <= 9; x++) {
+      for (let y = 6; y <= 14; y++) {
+        this.grid[y][x].type = 'path';
+      }
+    }
+    for (let x = 22; x <= 25; x++) {
+      for (let y = 6; y <= 14; y++) {
+        this.grid[y][x].type = 'path';
+      }
+    }
+    for (let x = 6; x <= 9; x++) {
+      for (let y = 17; y <= 24; y++) {
+        this.grid[y][x].type = 'path';
+      }
+    }
+    for (let x = 22; x <= 25; x++) {
+      for (let y = 17; y <= 24; y++) {
+        this.grid[y][x].type = 'path';
+      }
     }
   }
 
   private createWater(): void {
-    // Small pond
-    for (let y = 16; y <= 18; y++) {
-      for (let x = 4; x <= 7; x++) {
-        this.grid[y][x].type = 'water';
-        this.grid[y][x].walkable = false;
+    // Pond in corner
+    for (let y = 24; y <= 28; y++) {
+      for (let x = 24; x <= 28; x++) {
+        if (this.grid[y] && this.grid[y][x]) {
+          this.grid[y][x].type = 'water';
+          this.grid[y][x].walkable = false;
+        }
       }
     }
   }
@@ -192,150 +225,92 @@ export class KingdomScene extends Phaser.Scene {
     this.pathfinder.enableDiagonals();
   }
 
-  // Convert grid coords to isometric screen coords
-  private gridToScreen(gridX: number, gridY: number): { x: number; y: number } {
-    return {
-      x: (gridX - gridY) * (TILE_WIDTH / 2),
-      y: (gridX + gridY) * (TILE_HEIGHT / 2),
-    };
-  }
-
-  private drawMap(): void {
+  private drawGround(): void {
     const graphics = this.add.graphics();
-    this.mapContainer.add(graphics);
+    this.groundLayer.add(graphics);
 
-    // Draw tiles from back to front (isometric sorting)
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
         const tile = this.grid[y][x];
-        const screen = this.gridToScreen(x, y);
-        this.drawIsometricTile(graphics, screen.x, screen.y, tile.type, x, y);
-      }
-    }
+        const px = x * TILE_SIZE;
+        const py = y * TILE_SIZE;
 
-    // Draw trees on grass tiles
-    for (let y = 0; y < GRID_SIZE; y++) {
-      for (let x = 0; x < GRID_SIZE; x++) {
-        const tile = this.grid[y][x];
-        if (tile.type === 'grass' && tile.buildingId === null) {
-          // Random trees
-          const noise = this.pseudoNoise(x * 7, y * 11);
-          if (noise > 0.75) {
-            this.drawTree(x, y);
-          }
-        }
+        this.drawTile(graphics, px, py, tile.type, x, y);
       }
     }
   }
 
-  private drawIsometricTile(
+  private drawTile(
     graphics: Phaser.GameObjects.Graphics,
-    x: number, y: number,
+    px: number,
+    py: number,
     type: string,
-    gridX: number, gridY: number
+    gridX: number,
+    gridY: number
   ): void {
-    const hw = TILE_WIDTH / 2;
-    const hh = TILE_HEIGHT / 2;
+    const noise = this.noise(gridX, gridY);
 
-    // Tile diamond shape
-    const points = [
-      { x: x, y: y - hh },      // top
-      { x: x + hw, y: y },       // right
-      { x: x, y: y + hh },       // bottom
-      { x: x - hw, y: y },       // left
-    ];
-
-    let fillColor: number;
-    let variation = this.pseudoNoise(gridX * 3, gridY * 5);
-
+    let color: number;
     switch (type) {
       case 'path':
-        fillColor = variation > 0.5 ? PALETTE.cobblestone : PALETTE.cobblestoneLight;
+        color = noise > 0.6 ? PALETTE.path1 : noise > 0.3 ? PALETTE.path2 : PALETTE.path3;
         break;
       case 'water':
-        const wave = Math.sin(gridX * 0.5 + gridY * 0.5) > 0;
-        fillColor = wave ? PALETTE.water : PALETTE.waterLight;
+        const wave = (Math.sin(gridX * 0.8 + gridY * 0.6) + 1) / 2;
+        color = wave > 0.6 ? PALETTE.water1 : wave > 0.3 ? PALETTE.water2 : PALETTE.water3;
         break;
-      default: // grass
-        fillColor = variation > 0.6 ? PALETTE.grassDark :
-                    variation > 0.3 ? PALETTE.grass : PALETTE.grassLight;
+      default:
+        color = noise > 0.6 ? PALETTE.grass1 : noise > 0.3 ? PALETTE.grass2 : PALETTE.grass3;
     }
 
-    graphics.fillStyle(fillColor, 1);
-    graphics.beginPath();
-    graphics.moveTo(points[0].x, points[0].y);
-    graphics.lineTo(points[1].x, points[1].y);
-    graphics.lineTo(points[2].x, points[2].y);
-    graphics.lineTo(points[3].x, points[3].y);
-    graphics.closePath();
-    graphics.fill();
+    graphics.fillStyle(color, 1);
+    graphics.fillRect(px, py, TILE_SIZE, TILE_SIZE);
 
-    // Subtle tile border
-    graphics.lineStyle(1, 0x000000, 0.1);
-    graphics.strokePath();
-
-    // Cobblestone details
+    // Add subtle texture for paths (cobblestone look)
     if (type === 'path') {
-      graphics.fillStyle(PALETTE.cobblestoneDark, 0.3);
-      const stoneSize = 3;
-      for (let i = 0; i < 4; i++) {
-        const sx = x + (this.pseudoNoise(gridX + i, gridY) - 0.5) * (hw - 4);
-        const sy = y + (this.pseudoNoise(gridX, gridY + i) - 0.5) * (hh - 2);
-        graphics.fillCircle(sx, sy, stoneSize);
+      graphics.fillStyle(PALETTE.path3, 0.3);
+      const stoneNoise1 = this.noise(gridX * 3, gridY * 2);
+      const stoneNoise2 = this.noise(gridX * 2, gridY * 3);
+      if (stoneNoise1 > 0.5) {
+        graphics.fillCircle(px + 4, py + 4, 2);
       }
+      if (stoneNoise2 > 0.5) {
+        graphics.fillCircle(px + 11, py + 10, 2);
+      }
+      // Stone lines
+      graphics.lineStyle(1, PALETTE.path2, 0.2);
+      graphics.strokeRect(px + 1, py + 1, 6, 6);
+      graphics.strokeRect(px + 8, py + 8, 7, 7);
     }
-  }
 
-  private drawTree(gridX: number, gridY: number): void {
-    const screen = this.gridToScreen(gridX, gridY);
-    const container = this.add.container(screen.x, screen.y - 20);
-    this.mapContainer.add(container);
-
-    const graphics = this.add.graphics();
-    container.add(graphics);
-
-    // Tree trunk
-    graphics.fillStyle(PALETTE.wood, 1);
-    graphics.fillRect(-3, 10, 6, 15);
-
-    // Foliage layers (circular blobs)
-    const variation = this.pseudoNoise(gridX * 13, gridY * 17);
-    const baseColor = variation > 0.5 ? PALETTE.tree : PALETTE.treeDark;
-
-    graphics.fillStyle(baseColor, 1);
-    graphics.fillCircle(0, 0, 12);
-    graphics.fillCircle(-6, 4, 10);
-    graphics.fillCircle(6, 4, 10);
-
-    // Highlight
-    graphics.fillStyle(PALETTE.treeLight, 1);
-    graphics.fillCircle(-3, -4, 6);
-
-    // Sort depth based on Y position
-    container.setDepth(screen.y + 100);
+    // Grass detail
+    if (type === 'grass' && noise > 0.7) {
+      graphics.fillStyle(PALETTE.grass3, 0.5);
+      graphics.fillRect(px + 3, py + 2, 2, 3);
+      graphics.fillRect(px + 10, py + 8, 2, 3);
+    }
   }
 
   private createBuildings(): void {
-    // Inn (center)
-    this.createBuilding('inn', 'The Wandering Knight', 11, 6, 3, 3);
+    // Inn (large, center-ish)
+    this.createBuilding('inn', 'The Golden Crown', 10, 4, 5, 4, PALETTE.roofBrown);
 
     // Blacksmith
-    this.createBuilding('blacksmith', 'Iron Forge', 5, 7, 2, 2);
+    this.createBuilding('blacksmith', 'Iron Forge', 3, 5, 4, 3, PALETTE.roofRed);
 
     // Shop
-    this.createBuilding('shop', 'General Store', 17, 7, 2, 2);
+    this.createBuilding('shop', 'General Store', 24, 5, 4, 3, PALETTE.roofBlue);
 
     // Barracks
-    this.createBuilding('barracks', 'Barracks', 14, 14, 3, 2);
+    this.createBuilding('barracks', 'Barracks', 3, 19, 5, 4, PALETTE.roofRed);
 
     // Tower
-    this.createBuilding('tower', 'Watch Tower', 6, 14, 2, 2);
+    this.createBuilding('tower', 'Watch Tower', 26, 19, 3, 4, PALETTE.roofPurple);
 
-    // House 1
-    this.createBuilding('house', 'Cottage', 4, 4, 2, 2);
-
-    // House 2
-    this.createBuilding('house2', 'Manor', 18, 4, 2, 2);
+    // Houses
+    this.createBuilding('house1', 'Cottage', 19, 4, 3, 3, PALETTE.roofRed);
+    this.createBuilding('house2', 'Manor', 10, 20, 4, 3, PALETTE.roofBlue);
+    this.createBuilding('house3', 'Cabin', 17, 22, 3, 3, PALETTE.roofGreen);
   }
 
   private createBuilding(
@@ -344,48 +319,123 @@ export class KingdomScene extends Phaser.Scene {
     gridX: number,
     gridY: number,
     width: number,
-    height: number
+    height: number,
+    roofColor: number
   ): void {
-    const screen = this.gridToScreen(gridX, gridY);
-    const container = this.add.container(screen.x + (width * TILE_WIDTH / 4), screen.y);
-    this.mapContainer.add(container);
-
-    const graphics = this.add.graphics();
-    container.add(graphics);
+    const px = gridX * TILE_SIZE;
+    const py = gridY * TILE_SIZE;
+    const pxW = width * TILE_SIZE;
+    const pxH = height * TILE_SIZE;
 
     // Mark grid as occupied
     for (let dy = 0; dy < height; dy++) {
       for (let dx = 0; dx < width; dx++) {
-        if (gridY + dy < GRID_SIZE && gridX + dx < GRID_SIZE) {
+        if (this.grid[gridY + dy] && this.grid[gridY + dy][gridX + dx]) {
           this.grid[gridY + dy][gridX + dx].buildingId = type;
           this.grid[gridY + dy][gridX + dx].walkable = false;
         }
       }
     }
 
-    // Draw building based on type
-    this.drawBuildingGraphics(graphics, type, width, height);
+    const container = this.add.container(px, py);
+    this.objectLayer.add(container);
 
-    // Building label (hidden by default)
-    const label = this.add.text(0, -60, name, {
+    const graphics = this.add.graphics();
+    container.add(graphics);
+
+    // Building shadow (depth illusion)
+    graphics.fillStyle(0x000000, 0.2);
+    graphics.fillRect(4, 4, pxW, pxH);
+
+    // Wall base (3/4 view - we see front and side)
+    graphics.fillStyle(PALETTE.wallLight, 1);
+    graphics.fillRect(0, 6, pxW, pxH - 6);
+
+    // Wall shadow for depth
+    graphics.fillStyle(PALETTE.wallDark, 1);
+    graphics.fillRect(0, 6, 4, pxH - 6); // Left edge darker
+
+    // Right wall darker (3/4 view perspective)
+    graphics.fillStyle(PALETTE.wallMed, 1);
+    graphics.fillRect(pxW - 4, 6, 4, pxH - 6);
+
+    // Roof (HD-2D style - visible top with slight angle)
+    graphics.fillStyle(roofColor, 1);
+    graphics.fillRect(-2, -4, pxW + 4, 12);
+
+    // Roof highlight
+    graphics.fillStyle(roofColor + 0x202020, 1);
+    graphics.fillRect(0, -2, pxW, 4);
+
+    // Roof shadow line
+    graphics.fillStyle(roofColor - 0x202020, 1);
+    graphics.fillRect(-2, 6, pxW + 4, 2);
+
+    // Door (centered at bottom)
+    const doorX = (pxW - 10) / 2;
+    const doorY = pxH - 14;
+    graphics.fillStyle(PALETTE.door, 1);
+    graphics.fillRect(doorX, doorY, 10, 14);
+    graphics.fillStyle(PALETTE.woodDark, 1);
+    graphics.fillRect(doorX, doorY, 10, 2);
+    // Door handle
+    graphics.fillStyle(0xc8a838, 1);
+    graphics.fillCircle(doorX + 8, doorY + 8, 1);
+
+    // Windows
+    const windowColor = 0x88b8e8;
+    const windowShine = 0xa8d8ff;
+    if (width >= 3) {
+      // Left window
+      graphics.fillStyle(windowColor, 1);
+      graphics.fillRect(8, 14, 8, 8);
+      graphics.fillStyle(windowShine, 0.5);
+      graphics.fillRect(9, 15, 3, 3);
+      // Window frame
+      graphics.lineStyle(1, PALETTE.wood, 1);
+      graphics.strokeRect(8, 14, 8, 8);
+      graphics.lineBetween(12, 14, 12, 22);
+      graphics.lineBetween(8, 18, 16, 18);
+
+      // Right window
+      graphics.fillStyle(windowColor, 1);
+      graphics.fillRect(pxW - 16, 14, 8, 8);
+      graphics.fillStyle(windowShine, 0.5);
+      graphics.fillRect(pxW - 15, 15, 3, 3);
+      graphics.lineStyle(1, PALETTE.wood, 1);
+      graphics.strokeRect(pxW - 16, 14, 8, 8);
+      graphics.lineBetween(pxW - 12, 14, pxW - 12, 22);
+      graphics.lineBetween(pxW - 16, 18, pxW - 8, 18);
+    }
+
+    // Building sign for shops
+    if (type === 'inn' || type === 'shop' || type === 'blacksmith') {
+      graphics.fillStyle(PALETTE.wood, 1);
+      graphics.fillRect(pxW / 2 - 12, -8, 24, 8);
+      graphics.fillStyle(0xf8f8e8, 1);
+      graphics.fillCircle(pxW / 2, -4, 2);
+    }
+
+    // Name label (hidden by default)
+    const label = this.add.text(pxW / 2, -16, name, {
       fontSize: '10px',
       color: '#ffffff',
-      backgroundColor: '#000000aa',
+      backgroundColor: '#000000cc',
       padding: { x: 4, y: 2 },
     });
     label.setOrigin(0.5);
     label.setVisible(false);
     container.add(label);
 
-    // Interactive
-    const hitArea = new Phaser.Geom.Rectangle(-30, -50, 60, 70);
-    container.setInteractive(hitArea, Phaser.Geom.Rectangle.Contains);
+    // Interactive area
+    container.setSize(pxW, pxH);
+    container.setInteractive();
     container.on('pointerover', () => label.setVisible(true));
     container.on('pointerout', () => label.setVisible(false));
     container.on('pointerdown', () => this.onBuildingTap(type, name));
 
-    // Depth sort
-    container.setDepth(screen.y + (height * TILE_HEIGHT) + 200);
+    // Depth based on Y (lower = in front)
+    container.setDepth(py + pxH);
 
     const building: Building = {
       id: `${type}-${gridX}-${gridY}`,
@@ -396,114 +446,71 @@ export class KingdomScene extends Phaser.Scene {
     this.updatePathfinderGrid();
   }
 
-  private drawBuildingGraphics(
-    graphics: Phaser.GameObjects.Graphics,
-    type: string,
-    width: number,
-    height: number
-  ): void {
-    const w = width * 20;
-    void height; // used for depth calculation elsewhere
-
-    // Building style based on type
-    let roofColor = PALETTE.roofRed;
-    let wallColor = PALETTE.wallTan;
-    let buildingHeight = 40;
-
-    switch (type) {
-      case 'inn':
-        roofColor = PALETTE.roofBrown;
-        wallColor = PALETTE.wallTan;
-        buildingHeight = 50;
-        break;
-      case 'blacksmith':
-        roofColor = PALETTE.roofRed;
-        wallColor = PALETTE.wallBrown;
-        buildingHeight = 35;
-        break;
-      case 'shop':
-        roofColor = PALETTE.roofBlue;
-        wallColor = PALETTE.wallWhite;
-        buildingHeight = 35;
-        break;
-      case 'barracks':
-        roofColor = PALETTE.roofRed;
-        wallColor = PALETTE.wallBrown;
-        buildingHeight = 45;
-        break;
-      case 'tower':
-        roofColor = PALETTE.roofPurple;
-        wallColor = PALETTE.wallTan;
-        buildingHeight = 60;
-        break;
-      case 'house':
-      case 'house2':
-        roofColor = type === 'house' ? PALETTE.roofRed : PALETTE.roofBlue;
-        wallColor = PALETTE.wallWhite;
-        buildingHeight = 35;
-        break;
-    }
-
-    // Front wall
-    graphics.fillStyle(wallColor, 1);
-    graphics.fillRect(-w/2, -buildingHeight, w, buildingHeight);
-
-    // Side wall (darker)
-    graphics.fillStyle(wallColor - 0x202020, 1);
-    graphics.beginPath();
-    graphics.moveTo(w/2, -buildingHeight);
-    graphics.lineTo(w/2 + 15, -buildingHeight + 10);
-    graphics.lineTo(w/2 + 15, 10);
-    graphics.lineTo(w/2, 0);
-    graphics.closePath();
-    graphics.fill();
-
-    // Roof
-    graphics.fillStyle(roofColor, 1);
-    graphics.beginPath();
-    graphics.moveTo(-w/2 - 5, -buildingHeight);
-    graphics.lineTo(0, -buildingHeight - 20);
-    graphics.lineTo(w/2 + 5, -buildingHeight);
-    graphics.closePath();
-    graphics.fill();
-
-    // Roof side
-    graphics.fillStyle(roofColor - 0x202020, 1);
-    graphics.beginPath();
-    graphics.moveTo(w/2 + 5, -buildingHeight);
-    graphics.lineTo(0, -buildingHeight - 20);
-    graphics.lineTo(15, -buildingHeight - 10);
-    graphics.lineTo(w/2 + 20, -buildingHeight + 10);
-    graphics.closePath();
-    graphics.fill();
-
-    // Door
-    graphics.fillStyle(PALETTE.woodDark, 1);
-    graphics.fillRect(-5, -15, 10, 15);
-
-    // Windows
-    graphics.fillStyle(0x80c0ff, 1);
-    if (width >= 2) {
-      graphics.fillRect(-w/2 + 8, -buildingHeight + 10, 8, 8);
-      graphics.fillRect(w/2 - 16, -buildingHeight + 10, 8, 8);
-    }
-
-    // Sign for inn/shop
-    if (type === 'inn' || type === 'shop') {
-      graphics.fillStyle(PALETTE.wood, 1);
-      graphics.fillRect(-12, -buildingHeight - 5, 24, 12);
-      graphics.fillStyle(0xffffff, 1);
-      graphics.fillCircle(0, -buildingHeight + 1, 3);
+  private createTrees(): void {
+    // Place trees on grass tiles that aren't paths or buildings
+    for (let y = 0; y < GRID_SIZE; y++) {
+      for (let x = 0; x < GRID_SIZE; x++) {
+        const tile = this.grid[y][x];
+        if (tile.type === 'grass' && tile.buildingId === null) {
+          const n = this.noise(x * 7, y * 11);
+          if (n > 0.78) {
+            this.createTree(x, y);
+          }
+        }
+      }
     }
   }
 
-  private createCharacters(): void {
-    // Player's hero
-    this.createCharacter('hero', 'Your Hero', 'hero', 12, 8);
+  private createTree(gridX: number, gridY: number): void {
+    const px = gridX * TILE_SIZE + TILE_SIZE / 2;
+    const py = gridY * TILE_SIZE + TILE_SIZE;
 
-    // Villagers
-    this.createCharacter('villager1', 'Villager', 'villager', 8, 10);
-    this.createCharacter('villager2', 'Merchant', 'villager', 15, 11);
+    const container = this.add.container(px, py);
+    this.objectLayer.add(container);
+
+    const graphics = this.add.graphics();
+    container.add(graphics);
+
+    const treeVariation = this.noise(gridX * 13, gridY * 17);
+
+    // Tree shadow
+    graphics.fillStyle(0x000000, 0.2);
+    graphics.fillEllipse(2, 2, 12, 6);
+
+    // Trunk
+    graphics.fillStyle(PALETTE.treeTrunk, 1);
+    graphics.fillRect(-2, -12, 4, 14);
+
+    // Foliage (layered circles for HD-2D depth)
+    const baseColor = treeVariation > 0.5 ? PALETTE.tree1 : PALETTE.tree2;
+
+    // Back layer
+    graphics.fillStyle(baseColor - 0x101010, 1);
+    graphics.fillCircle(0, -18, 10);
+
+    // Middle layer
+    graphics.fillStyle(baseColor, 1);
+    graphics.fillCircle(-4, -14, 8);
+    graphics.fillCircle(4, -14, 8);
+
+    // Front layer (highlight)
+    graphics.fillStyle(PALETTE.tree3, 1);
+    graphics.fillCircle(-2, -16, 5);
+
+    // Mark as unwalkable
+    this.grid[gridY][gridX].walkable = false;
+
+    container.setDepth(py);
+  }
+
+  private createCharacters(): void {
+    // Player's hero (blue outfit)
+    this.createCharacter('hero', 'Your Hero', 'hero', 15, 15);
+
+    // Villagers (brown outfits)
+    this.createCharacter('villager1', 'Farmer', 'villager', 12, 12);
+    this.createCharacter('villager2', 'Merchant', 'villager', 18, 16);
+    this.createCharacter('villager3', 'Guard', 'villager', 8, 8);
   }
 
   private createCharacter(
@@ -513,21 +520,22 @@ export class KingdomScene extends Phaser.Scene {
     gridX: number,
     gridY: number
   ): Character {
-    const screen = this.gridToScreen(gridX, gridY);
-    const container = this.add.container(screen.x, screen.y - 10);
-    this.mapContainer.add(container);
+    const px = gridX * TILE_SIZE + TILE_SIZE / 2;
+    const py = gridY * TILE_SIZE + TILE_SIZE;
+
+    const container = this.add.container(px, py);
+    this.characterLayer.add(container);
 
     const graphics = this.add.graphics();
     container.add(graphics);
 
-    // Draw character
-    this.drawCharacterGraphics(graphics, type);
+    this.drawCharacter(graphics, type, 'down');
 
     // Name label
-    const label = this.add.text(0, -25, name, {
+    const label = this.add.text(0, -24, name, {
       fontSize: '8px',
       color: '#ffffff',
-      backgroundColor: '#000000aa',
+      backgroundColor: '#000000cc',
       padding: { x: 2, y: 1 },
     });
     label.setOrigin(0.5);
@@ -535,83 +543,141 @@ export class KingdomScene extends Phaser.Scene {
     container.add(label);
 
     // Interactive
-    container.setInteractive(new Phaser.Geom.Circle(0, 0, 15), Phaser.Geom.Circle.Contains);
+    container.setSize(16, 20);
+    container.setInteractive();
     container.on('pointerover', () => label.setVisible(true));
     container.on('pointerout', () => label.setVisible(false));
     container.on('pointerdown', () => this.onCharacterTap(id, name, type));
 
-    // Idle bob animation
+    // Idle animation
     this.tweens.add({
       targets: container,
-      y: container.y - 2,
-      duration: 800 + Math.random() * 400,
+      y: py - 1,
+      duration: 600 + Math.random() * 200,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
     });
 
-    container.setDepth(screen.y + 300);
+    container.setDepth(py);
 
     const character: Character = {
       id, name, type, gridX, gridY, container,
-      path: [], pathIndex: 0, isMoving: false,
+      path: [], pathIndex: 0, isMoving: false, direction: 'down',
     };
     this.characters.push(character);
+
+    // Make villagers wander
+    if (type === 'villager') {
+      this.time.addEvent({
+        delay: 5000 + Math.random() * 5000,
+        callback: () => this.wanderCharacter(character),
+        loop: true,
+      });
+    }
 
     return character;
   }
 
-  private drawCharacterGraphics(graphics: Phaser.GameObjects.Graphics, type: string): void {
+  private drawCharacter(
+    graphics: Phaser.GameObjects.Graphics,
+    type: string,
+    direction: string
+  ): void {
+    graphics.clear();
+
     // Shadow
     graphics.fillStyle(0x000000, 0.3);
-    graphics.fillEllipse(0, 8, 12, 4);
+    graphics.fillEllipse(0, 2, 10, 4);
 
-    // Body color based on type
-    let bodyColor = 0x4060c0; // Blue for hero
-    if (type === 'visitor') bodyColor = 0x60a040; // Green
-    if (type === 'villager') bodyColor = 0x806040; // Brown
+    // Body color
+    let bodyColor = 0x4868c8; // Blue for hero
+    let bodyHighlight = 0x6888e8;
+    if (type === 'visitor') {
+      bodyColor = 0x48a848;
+      bodyHighlight = 0x68c868;
+    }
+    if (type === 'villager') {
+      bodyColor = 0x886848;
+      bodyHighlight = 0xa88868;
+    }
 
-    // Body
+    // Body (tunic)
     graphics.fillStyle(bodyColor, 1);
-    graphics.fillRect(-5, -5, 10, 12);
+    graphics.fillRect(-5, -8, 10, 10);
+
+    // Body highlight
+    graphics.fillStyle(bodyHighlight, 1);
+    graphics.fillRect(-4, -7, 3, 4);
+
+    // Arms
+    graphics.fillStyle(bodyColor, 1);
+    graphics.fillRect(-7, -6, 3, 6);
+    graphics.fillRect(4, -6, 3, 6);
 
     // Head
-    graphics.fillStyle(PALETTE.skinTone, 1);
-    graphics.fillCircle(0, -10, 6);
+    graphics.fillStyle(PALETTE.skin, 1);
+    graphics.fillCircle(0, -12, 5);
 
-    // Hair
+    // Hair (different based on direction)
     graphics.fillStyle(PALETTE.hair, 1);
-    graphics.fillRect(-5, -15, 10, 5);
+    if (direction === 'down') {
+      graphics.fillRect(-4, -16, 8, 4);
+    } else if (direction === 'up') {
+      graphics.fillRect(-4, -17, 8, 6);
+    } else {
+      graphics.fillRect(-4, -16, 8, 4);
+      graphics.fillRect(direction === 'left' ? -5 : 3, -14, 3, 4);
+    }
 
-    // Eyes
-    graphics.fillStyle(0x000000, 1);
-    graphics.fillRect(-3, -11, 2, 2);
-    graphics.fillRect(1, -11, 2, 2);
+    // Eyes (only visible from front/side)
+    if (direction !== 'up') {
+      graphics.fillStyle(0x000000, 1);
+      if (direction === 'down') {
+        graphics.fillRect(-2, -13, 2, 2);
+        graphics.fillRect(1, -13, 2, 2);
+      } else if (direction === 'left') {
+        graphics.fillRect(-3, -13, 2, 2);
+      } else if (direction === 'right') {
+        graphics.fillRect(1, -13, 2, 2);
+      }
+    }
+
+    // Feet
+    graphics.fillStyle(0x483828, 1);
+    graphics.fillRect(-4, 0, 3, 2);
+    graphics.fillRect(1, 0, 3, 2);
+  }
+
+  private wanderCharacter(character: Character): void {
+    if (character.isMoving) return;
+
+    const dx = Math.floor(Math.random() * 7) - 3;
+    const dy = Math.floor(Math.random() * 7) - 3;
+    const newX = Phaser.Math.Clamp(character.gridX + dx, 2, GRID_SIZE - 3);
+    const newY = Phaser.Math.Clamp(character.gridY + dy, 2, GRID_SIZE - 3);
+
+    if (this.grid[newY] && this.grid[newY][newX] && this.grid[newY][newX].walkable) {
+      this.moveCharacterTo(character, newX, newY);
+    }
   }
 
   private spawnVisitor(): void {
     const id = `visitor-${Date.now()}`;
-    const name = this.getRandomVisitorName();
+    const names = ['Traveler', 'Wanderer', 'Knight', 'Mage', 'Ranger', 'Bard', 'Merchant'];
+    const name = Phaser.Utils.Array.GetRandom(names);
 
-    // Spawn at edge of map
-    const spawnPoints = [
-      { x: 11, y: 0 },
-      { x: 12, y: 0 },
-    ];
-    const spawn = Phaser.Utils.Array.GetRandom(spawnPoints);
-
+    // Spawn at road entrance
+    const spawn = { x: 15, y: 1 };
     const visitor = this.createCharacter(id, name, 'visitor', spawn.x, spawn.y);
 
-    // Find path to inn
+    // Path to inn
     const inn = this.buildings.find(b => b.type === 'inn');
     if (inn) {
-      this.moveCharacterTo(visitor, inn.gridX + 1, inn.gridY + inn.height);
+      this.time.delayedCall(500, () => {
+        this.moveCharacterTo(visitor, inn.gridX + 2, inn.gridY + inn.height + 1);
+      });
     }
-  }
-
-  private getRandomVisitorName(): string {
-    const names = ['Traveler', 'Wanderer', 'Adventurer', 'Knight', 'Mage', 'Ranger', 'Bard'];
-    return Phaser.Utils.Array.GetRandom(names);
   }
 
   private moveCharacterTo(character: Character, targetX: number, targetY: number): void {
@@ -639,17 +705,31 @@ export class KingdomScene extends Phaser.Scene {
     }
 
     const next = character.path[character.pathIndex];
-    const screen = this.gridToScreen(next.x, next.y);
+    const px = next.x * TILE_SIZE + TILE_SIZE / 2;
+    const py = next.y * TILE_SIZE + TILE_SIZE;
+
+    // Update direction
+    const dx = next.x - character.gridX;
+    const dy = next.y - character.gridY;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      character.direction = dx > 0 ? 'right' : 'left';
+    } else {
+      character.direction = dy > 0 ? 'down' : 'up';
+    }
+
+    // Redraw character facing new direction
+    const graphics = character.container.getAt(0) as Phaser.GameObjects.Graphics;
+    this.drawCharacter(graphics, character.type, character.direction);
 
     this.tweens.add({
       targets: character.container,
-      x: screen.x,
-      y: screen.y - 10,
-      duration: 300,
+      x: px,
+      y: py,
+      duration: 200,
       onComplete: () => {
         character.gridX = next.x;
         character.gridY = next.y;
-        character.container.setDepth(screen.y + 300);
+        character.container.setDepth(py);
         character.pathIndex++;
         this.moveAlongPath(character);
       },
@@ -668,14 +748,16 @@ export class KingdomScene extends Phaser.Scene {
         const dx = pointer.x - this.dragStartX;
         const dy = pointer.y - this.dragStartY;
 
-        this.cameraOffsetX += dx;
-        this.cameraOffsetY += dy;
+        this.cameraX += dx;
+        this.cameraY += dy;
 
         // Clamp camera
-        this.cameraOffsetX = Phaser.Math.Clamp(this.cameraOffsetX, -200, GAME_WIDTH + 200);
-        this.cameraOffsetY = Phaser.Math.Clamp(this.cameraOffsetY, -100, GAME_HEIGHT);
+        const mapWidth = GRID_SIZE * TILE_SIZE;
+        const mapHeight = GRID_SIZE * TILE_SIZE;
+        this.cameraX = Phaser.Math.Clamp(this.cameraX, -mapWidth + 100, GAME_WIDTH - 100);
+        this.cameraY = Phaser.Math.Clamp(this.cameraY, -mapHeight + 150, GAME_HEIGHT - 100);
 
-        this.mapContainer.setPosition(this.cameraOffsetX, this.cameraOffsetY);
+        this.updateCameraPosition();
 
         this.dragStartX = pointer.x;
         this.dragStartY = pointer.y;
@@ -688,58 +770,52 @@ export class KingdomScene extends Phaser.Scene {
   }
 
   private onBuildingTap(type: string, name: string): void {
-    console.log('Building tapped:', type, name);
     this.events.emit('building-selected', { type, name });
-
-    // Show info panel
-    this.showInfoPanel(`${name}`, `Tap to enter the ${type}`);
+    this.showInfoPanel(name, `Tap to enter the ${type}`);
   }
 
   private onCharacterTap(id: string, name: string, type: string): void {
-    console.log('Character tapped:', id, name, type);
     this.events.emit('character-selected', { id, name, type });
 
     if (type === 'visitor') {
-      this.showInfoPanel(name, 'A traveling adventurer. Recruit them?');
+      this.showInfoPanel(name, 'A traveling adventurer seeking glory!');
     } else if (type === 'hero') {
-      this.showInfoPanel(name, 'Your loyal hero. View stats?');
+      this.showInfoPanel(name, 'Your loyal champion.');
     } else {
-      this.showInfoPanel(name, 'A villager going about their day.');
+      this.showInfoPanel(name, 'A villager of the kingdom.');
     }
   }
 
   private showInfoPanel(title: string, description: string): void {
-    // Remove existing panel
-    const existing = this.children.getByName('infoPanel');
+    const existing = this.uiLayer.getByName('infoPanel');
     if (existing) existing.destroy();
 
     const panel = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT - 100);
     panel.setName('infoPanel');
-    panel.setDepth(1000);
+    this.uiLayer.add(panel);
 
     const bg = this.add.graphics();
     bg.fillStyle(0x1a1a2e, 0.95);
-    bg.fillRoundedRect(-150, -40, 300, 80, 10);
-    bg.lineStyle(2, 0x4060a0, 1);
-    bg.strokeRoundedRect(-150, -40, 300, 80, 10);
+    bg.fillRoundedRect(-140, -35, 280, 70, 8);
+    bg.lineStyle(2, 0x4868a8, 1);
+    bg.strokeRoundedRect(-140, -35, 280, 70, 8);
     panel.add(bg);
 
-    const titleText = this.add.text(0, -25, title, {
-      fontSize: '16px',
+    const titleText = this.add.text(0, -18, title, {
+      fontSize: '14px',
       color: '#ffffff',
       fontStyle: 'bold',
     });
     titleText.setOrigin(0.5);
     panel.add(titleText);
 
-    const descText = this.add.text(0, 5, description, {
-      fontSize: '12px',
-      color: '#80a0c0',
+    const descText = this.add.text(0, 6, description, {
+      fontSize: '11px',
+      color: '#88a8c8',
     });
     descText.setOrigin(0.5);
     panel.add(descText);
 
-    // Auto-hide after 3 seconds
     this.time.delayedCall(3000, () => panel.destroy());
   }
 
@@ -748,94 +824,95 @@ export class KingdomScene extends Phaser.Scene {
     const headerBg = this.add.graphics();
     headerBg.fillStyle(0x1a1a2e, 0.95);
     headerBg.fillRect(0, 0, GAME_WIDTH, 50);
-    headerBg.lineStyle(2, 0x4060a0, 1);
-    headerBg.strokeRect(0, 0, GAME_WIDTH, 50);
-    headerBg.setDepth(999);
+    headerBg.lineStyle(2, 0x4868a8, 1);
+    headerBg.lineBetween(0, 50, GAME_WIDTH, 50);
+    this.uiLayer.add(headerBg);
 
     const title = this.add.text(GAME_WIDTH / 2, 25, 'YOUR KINGDOM', {
-      fontSize: '18px',
+      fontSize: '16px',
       color: '#ffffff',
       fontStyle: 'bold',
       fontFamily: 'monospace',
     });
     title.setOrigin(0.5);
-    title.setDepth(1000);
+    this.uiLayer.add(title);
 
     // Back button
     const backBtn = this.add.text(15, 25, '< WORLD', {
-      fontSize: '12px',
-      color: '#4a90d9',
+      fontSize: '11px',
+      color: '#4888d8',
       fontFamily: 'monospace',
     });
     backBtn.setOrigin(0, 0.5);
-    backBtn.setDepth(1000);
     backBtn.setInteractive();
     backBtn.on('pointerdown', () => this.scene.start('WorldScene'));
-    backBtn.on('pointerover', () => backBtn.setColor('#80c0ff'));
-    backBtn.on('pointerout', () => backBtn.setColor('#4a90d9'));
+    backBtn.on('pointerover', () => backBtn.setColor('#88c8ff'));
+    backBtn.on('pointerout', () => backBtn.setColor('#4888d8'));
+    this.uiLayer.add(backBtn);
 
     // Build button
     const buildBtn = this.add.text(GAME_WIDTH - 15, 25, 'BUILD', {
-      fontSize: '12px',
-      color: '#40a040',
+      fontSize: '11px',
+      color: '#48a848',
       fontFamily: 'monospace',
     });
     buildBtn.setOrigin(1, 0.5);
-    buildBtn.setDepth(1000);
     buildBtn.setInteractive();
     buildBtn.on('pointerdown', () => this.showInfoPanel('Build Mode', 'Coming soon!'));
-    buildBtn.on('pointerover', () => buildBtn.setColor('#80ff80'));
-    buildBtn.on('pointerout', () => buildBtn.setColor('#40a040'));
+    buildBtn.on('pointerover', () => buildBtn.setColor('#88e888'));
+    buildBtn.on('pointerout', () => buildBtn.setColor('#48a848'));
+    this.uiLayer.add(buildBtn);
 
     // Bottom nav
     const navBg = this.add.graphics();
     navBg.fillStyle(0x1a1a2e, 0.95);
-    navBg.fillRect(0, GAME_HEIGHT - 60, GAME_WIDTH, 60);
-    navBg.lineStyle(2, 0x4060a0, 1);
-    navBg.strokeRect(0, GAME_HEIGHT - 60, GAME_WIDTH, 60);
-    navBg.setDepth(999);
+    navBg.fillRect(0, GAME_HEIGHT - 55, GAME_WIDTH, 55);
+    navBg.lineStyle(2, 0x4868a8, 1);
+    navBg.lineBetween(0, GAME_HEIGHT - 55, GAME_WIDTH, GAME_HEIGHT - 55);
+    this.uiLayer.add(navBg);
 
-    // Nav buttons
-    this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 30, 'WORLD', false, () => {
+    this.createNavButton(GAME_WIDTH / 4, GAME_HEIGHT - 28, 'WORLD', false, () => {
       this.scene.start('WorldScene');
     });
-    this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 30, 'KINGDOM', true);
-    this.createNavButton((GAME_WIDTH / 4) * 3, GAME_HEIGHT - 30, 'BATTLE', false, () => {
+    this.createNavButton((GAME_WIDTH / 4) * 2, GAME_HEIGHT - 28, 'KINGDOM', true);
+    this.createNavButton((GAME_WIDTH / 4) * 3, GAME_HEIGHT - 28, 'BATTLE', false, () => {
       this.scene.start('BattleScene');
     });
   }
 
-  private createNavButton(x: number, y: number, label: string, active: boolean, callback?: () => void): void {
+  private createNavButton(
+    x: number, y: number, label: string, active: boolean, callback?: () => void
+  ): void {
     const bg = this.add.graphics();
-    bg.fillStyle(active ? 0x4060a0 : 0x303050, 1);
-    bg.fillRoundedRect(x - 40, y - 12, 80, 24, 4);
-    bg.setDepth(1000);
+    bg.fillStyle(active ? 0x4868a8 : 0x303048, 1);
+    bg.fillRoundedRect(x - 38, y - 11, 76, 22, 4);
+    this.uiLayer.add(bg);
 
     const btn = this.add.text(x, y, label, {
-      fontSize: '11px',
-      color: active ? '#ffffff' : '#808090',
+      fontSize: '10px',
+      color: active ? '#ffffff' : '#686878',
       fontStyle: 'bold',
       fontFamily: 'monospace',
     });
     btn.setOrigin(0.5);
-    btn.setDepth(1001);
+    this.uiLayer.add(btn);
 
     if (callback) {
-      bg.setInteractive(new Phaser.Geom.Rectangle(x - 40, y - 12, 80, 24), Phaser.Geom.Rectangle.Contains);
+      bg.setInteractive(new Phaser.Geom.Rectangle(x - 38, y - 11, 76, 22), Phaser.Geom.Rectangle.Contains);
       bg.on('pointerdown', callback);
     }
   }
 
-  private pseudoNoise(x: number, y: number): number {
+  private noise(x: number, y: number): number {
     const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
     return n - Math.floor(n);
   }
 
   update(): void {
-    // Update character depths for proper sorting
+    // Update character depths for proper Y-sorting
     for (const char of this.characters) {
-      const screen = this.gridToScreen(char.gridX, char.gridY);
-      char.container.setDepth(screen.y + 300);
+      const py = char.gridY * TILE_SIZE + TILE_SIZE;
+      char.container.setDepth(py);
     }
   }
 }
