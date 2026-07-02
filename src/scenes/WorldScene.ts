@@ -566,6 +566,11 @@ export class WorldScene extends Phaser.Scene {
       cell(`clean_${key}`, col, 0);
     }
 
+    // Tileable top-down house tiles (blue/red roofs) for 'town' terrain, so
+    // building footprints fill with rows of housing.
+    cell('t_town_blue', 6, 0);
+    cell('t_town_red', 7, 0);
+
     // Register all 16 corner-blob frames for each autotile terrain
     for (const [key, [bc, br]] of Object.entries(AUTOTILE_BLOCKS)) {
       for (let m = 0; m < 16; m++) {
@@ -627,6 +632,15 @@ export class WorldScene extends Phaser.Scene {
   // terrain; grass/park/town fall back to the plain grass base tile.
   private autotileFrame(x: number, y: number): string {
     const terr = this.terrainGrid[y][x];
+
+    // Buildings render as tiled housing: each footprint tile is a house, so a
+    // row of buildings reads as a row of houses. Roof colour varies by coarse
+    // 2x2 clusters so adjacent units look like distinct buildings.
+    if (terr === 'town') {
+      const v = this.pseudoNoise(Math.floor(x / 2) * 2.3 + 1, Math.floor(y / 2) * 2.3 + 1);
+      return v > 0.5 ? 't_town_blue' : 't_town_red';
+    }
+
     const key = TERRAIN_BLOCK[terr];
     if (!key) return 't_grass';
 
@@ -657,42 +671,12 @@ export class WorldScene extends Phaser.Scene {
 
   // Scatter buildings on 'town' terrain across a coarse lattice so they read
   // as villages rather than a solid wall of houses.
+  // 'town' terrain now renders as tiled house tiles directly in the terrain
+  // layer, so no separate building sprites are needed. Kept as a hook (and to
+  // clear any sprites from an earlier render).
   private placeTownStructures(): void {
     this.townSprites.forEach(s => s.destroy());
     this.townSprites = [];
-    const S = MAP_TILE_SIZE;
-
-    // Preferred path: one house per real OSM building, sized to its footprint,
-    // so the RPG map matches the actual density and position of buildings.
-    if (this.buildingPlacements.length > 0) {
-      for (const b of this.buildingPlacements) {
-        const area = b.w * b.h;
-        const key = area >= 14 ? 's_tower' : area >= 6 ? 's_manor' : 's_cottage';
-        const img = this.add.image(b.cx * S + S / 2, b.cy * S + S / 2, 'world-tileset', key);
-        img.setOrigin(0.5, 0.62); // sit the footprint over the building centre
-        const targetW = Phaser.Math.Clamp(Math.max(b.w, b.h), 1.3, 4) * S;
-        img.setScale(targetW / img.width);
-        this.mapContainer.add(img);
-        this.townSprites.push(img);
-      }
-      return;
-    }
-
-    // Fallback (procedural terrain, no OSM data): scatter on 'town' tiles.
-    const houses = ['s_cottage', 's_manor', 's_tower'];
-    for (let y = 0; y < TILES_Y; y++) {
-      for (let x = 0; x < TILES_X; x++) {
-        if (this.terrainGrid[y][x] !== 'town') continue;
-        if (x % 3 !== 0 || y % 3 !== 0) continue;
-
-        const key = houses[(x * 7 + y * 13) % houses.length];
-        const img = this.add.image(x * S + S / 2, y * S + S, 'world-tileset', key);
-        img.setOrigin(0.5, 1);
-        img.setScale((S * 2) / img.width);
-        this.mapContainer.add(img);
-        this.townSprites.push(img);
-      }
-    }
   }
 
   private drawTile(tileX: number, tileY: number, terrain: TerrainType): void {
