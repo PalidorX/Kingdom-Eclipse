@@ -102,6 +102,8 @@ export class WorldScene extends Phaser.Scene {
   private terrainRT: Phaser.GameObjects.RenderTexture | null = null;
   private townSprites: Phaser.GameObjects.Image[] = [];
   private useTileset = false;
+  // One entry per real OSM building: tile-space centroid + footprint size.
+  private buildingPlacements: { cx: number; cy: number; w: number; h: number }[] = [];
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
@@ -308,6 +310,7 @@ export class WorldScene extends Phaser.Scene {
   private generateTerrainFromOSM(): void {
     // Reset to grass
     this.initializeTerrainGrid();
+    this.buildingPlacements = [];
 
     // Convert GPS to tile coordinates
     const centerLat = this.currentPosition.latitude;
@@ -327,10 +330,42 @@ export class WorldScene extends Phaser.Scene {
       } else {
         // Fill polygon interiors for buildings, water, parks, forests
         this.fillPolygon(feature.geometry, terrainType, centerLat, centerLon, latPerTile, lonPerTile);
+        // Record one house per real building so density matches the map
+        if (feature.type === 'building') {
+          this.recordBuildingPlacement(feature.geometry, centerLat, centerLon, latPerTile, lonPerTile);
+        }
       }
     }
 
-    console.log(`Rendered ${this.osmFeatures.length} OSM features`);
+    // Draw buildings lower on screen last so they overlap correctly
+    this.buildingPlacements.sort((a, b) => a.cy - b.cy);
+
+    console.log(`Rendered ${this.osmFeatures.length} OSM features, ${this.buildingPlacements.length} buildings`);
+  }
+
+  private recordBuildingPlacement(
+    geometry: { lat: number; lon: number }[],
+    centerLat: number,
+    centerLon: number,
+    latPerTile: number,
+    lonPerTile: number
+  ): void {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of geometry) {
+      const x = (p.lon - centerLon) / lonPerTile + TILES_X / 2;
+      const y = (centerLat - p.lat) / latPerTile + TILES_Y / 2;
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    // Ignore buildings whose centre is well off-screen
+    if (cx < -2 || cx > TILES_X + 2 || cy < -2 || cy > TILES_Y + 2) return;
+    this.buildingPlacements.push({
+      cx, cy,
+      w: Math.max(1, maxX - minX),
+      h: Math.max(1, maxY - minY),
+    });
   }
 
   private drawRoadLine(
@@ -625,8 +660,25 @@ export class WorldScene extends Phaser.Scene {
   private placeTownStructures(): void {
     this.townSprites.forEach(s => s.destroy());
     this.townSprites = [];
-
     const S = MAP_TILE_SIZE;
+
+    // Preferred path: one house per real OSM building, sized to its footprint,
+    // so the RPG map matches the actual density and position of buildings.
+    if (this.buildingPlacements.length > 0) {
+      for (const b of this.buildingPlacements) {
+        const area = b.w * b.h;
+        const key = area >= 14 ? 's_tower' : area >= 6 ? 's_manor' : 's_cottage';
+        const img = this.add.image(b.cx * S + S / 2, b.cy * S + S / 2, 'world-tileset', key);
+        img.setOrigin(0.5, 0.62); // sit the footprint over the building centre
+        const targetW = Phaser.Math.Clamp(Math.max(b.w, b.h), 1.3, 4) * S;
+        img.setScale(targetW / img.width);
+        this.mapContainer.add(img);
+        this.townSprites.push(img);
+      }
+      return;
+    }
+
+    // Fallback (procedural terrain, no OSM data): scatter on 'town' tiles.
     const houses = ['s_cottage', 's_manor', 's_tower'];
     for (let y = 0; y < TILES_Y; y++) {
       for (let x = 0; x < TILES_X; x++) {
@@ -635,8 +687,8 @@ export class WorldScene extends Phaser.Scene {
 
         const key = houses[(x * 7 + y * 13) % houses.length];
         const img = this.add.image(x * S + S / 2, y * S + S, 'world-tileset', key);
-        img.setOrigin(0.5, 1); // anchor building base at the tile's bottom edge
-        img.setScale((S * 2) / img.width); // ~2 tiles wide
+        img.setOrigin(0.5, 1);
+        img.setScale((S * 2) / img.width);
         this.mapContainer.add(img);
         this.townSprites.push(img);
       }
