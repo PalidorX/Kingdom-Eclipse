@@ -26,14 +26,17 @@ export class ThreeRenderer {
     this.camera.position.set(0, 0, 100);
     this.camera.lookAt(0, 0, 0);
 
-    // Create renderer with transparent background
+    // Create renderer with transparent background.
+    // antialias off + capped pixel ratio keeps fill cost down on mobile;
+    // powerPreference hints the GPU for smoother framerates.
     this.renderer = new THREE.WebGLRenderer({
       alpha: true,
-      antialias: true,
+      antialias: false,
+      powerPreference: 'high-performance',
     });
     this.renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
     // Position the Three.js canvas over the Phaser canvas
     const canvas = this.renderer.domElement;

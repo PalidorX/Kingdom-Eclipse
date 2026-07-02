@@ -236,8 +236,10 @@ export class KingdomScene extends Phaser.Scene {
   }
 
   private drawGround(): void {
-    const graphics = this.add.graphics();
-    this.groundLayer.add(graphics);
+    // Draw the ground once to an OFFSCREEN graphics, then bake it into a
+    // single texture. Phaser Graphics re-issues every fill command to the
+    // GPU each frame; a baked texture renders as one quad (near-zero cost).
+    const graphics = this.make.graphics({ x: 0, y: 0 }, false);
 
     for (let y = 0; y < GRID_ROWS; y++) {
       for (let x = 0; x < GRID_COLS; x++) {
@@ -249,6 +251,17 @@ export class KingdomScene extends Phaser.Scene {
         }
       }
     }
+
+    const w = GRID_COLS * TILE_SIZE;
+    const h = GRID_ROWS * TILE_SIZE;
+    if (this.textures.exists('kingdom-ground')) {
+      this.textures.remove('kingdom-ground');
+    }
+    graphics.generateTexture('kingdom-ground', w, h);
+    graphics.destroy();
+
+    const groundImage = this.add.image(0, 0, 'kingdom-ground').setOrigin(0, 0);
+    this.groundLayer.add(groundImage);
   }
 
   private drawTile(
@@ -507,7 +520,53 @@ export class KingdomScene extends Phaser.Scene {
     graphics.fillRect(x, y + h / 2 - 1, w, 2);
   }
 
+  // Tree logical origin (base of trunk) inside the baked texture
+  private static readonly TREE_OX = 22;
+  private static readonly TREE_OY = 56;
+
+  private ensureTreeTexture(): void {
+    if (this.textures.exists('kingdom-tree')) return;
+
+    // Bake a single tree once; every tree reuses this texture as an Image
+    // instead of holding its own live Graphics (which re-renders per frame).
+    const OX = KingdomScene.TREE_OX;
+    const OY = KingdomScene.TREE_OY;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+
+    // Shadow
+    g.fillStyle(0x000000, 0.25);
+    g.fillEllipse(OX + 0, OY + 4, 28, 10);
+
+    // Trunk
+    g.fillStyle(PALETTE.treeTrunk, 1);
+    g.fillRect(OX - 4, OY - 20, 8, 24);
+    g.fillStyle(PALETTE.woodDark, 1);
+    g.fillRect(OX - 4, OY - 20, 3, 24);
+
+    // Foliage - bottom
+    g.fillStyle(PALETTE.treeShadow, 1);
+    g.fillCircle(OX + 0, OY - 24, 18);
+    // Middle
+    g.fillStyle(PALETTE.treeLeaf1, 1);
+    g.fillCircle(OX - 6, OY - 32, 14);
+    g.fillCircle(OX + 6, OY - 32, 14);
+    g.fillCircle(OX + 0, OY - 28, 16);
+    // Top
+    g.fillStyle(PALETTE.treeLeaf2, 1);
+    g.fillCircle(OX + 0, OY - 40, 14);
+    g.fillCircle(OX - 8, OY - 36, 10);
+    g.fillCircle(OX + 8, OY - 36, 10);
+    // Highlights
+    g.fillStyle(PALETTE.treeHighlight, 1);
+    g.fillCircle(OX - 4, OY - 44, 6);
+    g.fillCircle(OX - 10, OY - 34, 4);
+
+    g.generateTexture('kingdom-tree', 44, 68);
+    g.destroy();
+  }
+
   private createTrees(): void {
+    this.ensureTreeTexture();
     for (let y = 0; y < GRID_ROWS; y++) {
       for (let x = 0; x < GRID_COLS; x++) {
         const tile = this.grid[y]?.[x];
@@ -525,46 +584,13 @@ export class KingdomScene extends Phaser.Scene {
     const px = gridX * TILE_SIZE + TILE_SIZE / 2;
     const py = gridY * TILE_SIZE + TILE_SIZE;
 
-    const container = this.add.container(px, py);
-    this.objectLayer.add(container);
-
-    const graphics = this.add.graphics();
-    container.add(graphics);
-
-    // Shadow
-    graphics.fillStyle(0x000000, 0.25);
-    graphics.fillEllipse(0, 4, 28, 10);
-
-    // Trunk (visible below foliage)
-    graphics.fillStyle(PALETTE.treeTrunk, 1);
-    graphics.fillRect(-4, -20, 8, 24);
-    graphics.fillStyle(PALETTE.woodDark, 1);
-    graphics.fillRect(-4, -20, 3, 24);
-
-    // Foliage layers (2 tiles tall = 64px of foliage)
-    // Bottom layer
-    graphics.fillStyle(PALETTE.treeShadow, 1);
-    graphics.fillCircle(0, -24, 18);
-
-    // Middle layer
-    graphics.fillStyle(PALETTE.treeLeaf1, 1);
-    graphics.fillCircle(-6, -32, 14);
-    graphics.fillCircle(6, -32, 14);
-    graphics.fillCircle(0, -28, 16);
-
-    // Top layer
-    graphics.fillStyle(PALETTE.treeLeaf2, 1);
-    graphics.fillCircle(0, -40, 14);
-    graphics.fillCircle(-8, -36, 10);
-    graphics.fillCircle(8, -36, 10);
-
-    // Highlights
-    graphics.fillStyle(PALETTE.treeHighlight, 1);
-    graphics.fillCircle(-4, -44, 6);
-    graphics.fillCircle(-10, -34, 4);
+    // Reuse the baked tree texture; align the trunk base to (px, py)
+    const tree = this.add.image(px, py, 'kingdom-tree');
+    tree.setDisplayOrigin(KingdomScene.TREE_OX, KingdomScene.TREE_OY);
+    this.objectLayer.add(tree);
 
     this.grid[gridY][gridX].walkable = false;
-    container.setDepth(py);
+    tree.setDepth(py);
   }
 
   private createCharacters(): void {
