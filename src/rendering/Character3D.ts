@@ -350,11 +350,8 @@ export class Character3D {
       // Leg swing
       this.leftLeg.rotation.x = -Math.sin(t) * amplitude * 0.8;
       this.rightLeg.rotation.x = Math.sin(t) * amplitude * 0.8;
-    } else {
-      // Idle breathing animation
-      const breathe = Math.sin(this.animationTime * 2) * 0.02;
-      this.torso.scale.y = 1 + breathe;
     }
+    // No idle animation - characters stand still when not walking
   }
 
   // Play attack animation

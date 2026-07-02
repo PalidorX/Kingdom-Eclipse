@@ -119,8 +119,8 @@ export class CharacterManager {
     const scale = 0.5;
     managed.character.group.scale.set(scale, scale, scale);
 
-    // Position with Y offset for character height
-    managed.character.setPosition(worldPos.x, worldPos.y + 30 * scale, -managed.depth * 0.01);
+    // Feet sit on the tile - model origin (y=0) is at the feet, so no vertical lift
+    managed.character.setPosition(worldPos.x, worldPos.y, -managed.depth * 0.01);
   }
 
   private updateAllPositions(): void {
