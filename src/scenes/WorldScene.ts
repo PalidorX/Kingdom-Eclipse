@@ -52,8 +52,8 @@ const PALETTE = {
   sandDark: 0xc0a060,
 };
 
-// Tile size for the SNES-style map
-const MAP_TILE_SIZE = 16;
+// Tile size for the RPG map (32x32 tileset)
+const MAP_TILE_SIZE = 32;
 const TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
 const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
 
@@ -61,6 +61,19 @@ const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
 const METERS_PER_TILE = 5;
 
 type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
+
+// Solid fill tile (col,row) in the 8x23 world tileset for each terrain type.
+// Frames are registered on the 'world-tileset' texture in defineTilesetFrames().
+const TERRAIN_FRAME: Record<TerrainType, string> = {
+  grass: 't_grass',
+  park: 't_grass',
+  water: 't_water',
+  forest: 't_forest',
+  path: 't_road',
+  mountain: 't_mountain',
+  sand: 't_sand',
+  town: 't_grass',
+};
 
 export class WorldScene extends Phaser.Scene {
   private playerMarker!: Phaser.GameObjects.Container;
@@ -76,6 +89,9 @@ export class WorldScene extends Phaser.Scene {
   private resourceMarkers: Phaser.GameObjects.Container[] = [];
   private dungeonMarkers: Phaser.GameObjects.Container[] = [];
   private mapGraphics!: Phaser.GameObjects.Graphics;
+  private terrainRT: Phaser.GameObjects.RenderTexture | null = null;
+  private townSprites: Phaser.GameObjects.Image[] = [];
+  private useTileset = false;
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
@@ -92,6 +108,11 @@ export class WorldScene extends Phaser.Scene {
 
   constructor() {
     super({ key: 'WorldScene' });
+  }
+
+  preload(): void {
+    // Load the world-map tileset (served from public/assets via Vite base)
+    this.load.image('world-tileset', `${import.meta.env.BASE_URL}assets/world-tileset.png`);
   }
 
   create(): void {
@@ -477,19 +498,92 @@ export class WorldScene extends Phaser.Scene {
     return n - Math.floor(n);
   }
 
+  // Register named frames on the tileset texture: 32px terrain tiles plus
+  // free-form building sprites (bounding boxes measured from the sheet).
+  private defineTilesetFrames(): void {
+    if (!this.textures.exists('world-tileset')) {
+      this.useTileset = false;
+      return;
+    }
+    const tex = this.textures.get('world-tileset');
+    const cell = (name: string, col: number, row: number) => {
+      if (!tex.has(name)) tex.add(name, 0, col * 32, row * 32, 32, 32);
+    };
+    cell('t_grass', 0, 0);
+    cell('t_water', 3, 4);
+    cell('t_forest', 4, 1);
+    cell('t_mountain', 3, 8);
+    cell('t_road', 7, 8);
+    cell('t_sand', 3, 12);
+
+    const rect = (name: string, x: number, y: number, w: number, h: number) => {
+      if (!tex.has(name)) tex.add(name, 0, x, y, w, h);
+    };
+    rect('s_cottage', 6, 535, 76, 68);
+    rect('s_manor', 82, 538, 96, 69);
+    rect('s_tower', 176, 526, 33, 84);
+
+    this.useTileset = true;
+  }
+
   private createWorldMap(): void {
-    this.mapGraphics = this.add.graphics();
-    this.mapContainer.add(this.mapGraphics);
+    this.defineTilesetFrames();
+
+    if (this.useTileset) {
+      this.terrainRT = this.add
+        .renderTexture(0, 0, TILES_X * MAP_TILE_SIZE, TILES_Y * MAP_TILE_SIZE)
+        .setOrigin(0, 0);
+      this.mapContainer.add(this.terrainRT);
+    } else {
+      // Fallback to the original procedural renderer if the tileset is missing
+      this.mapGraphics = this.add.graphics();
+      this.mapContainer.add(this.mapGraphics);
+    }
 
     this.drawMap();
   }
 
   private drawMap(): void {
-    this.mapGraphics.clear();
+    if (this.useTileset && this.terrainRT) {
+      this.terrainRT.clear();
+      const S = MAP_TILE_SIZE;
+      for (let y = 0; y < TILES_Y; y++) {
+        for (let x = 0; x < TILES_X; x++) {
+          const frame = TERRAIN_FRAME[this.terrainGrid[y][x]] || 't_grass';
+          this.terrainRT.drawFrame('world-tileset', frame, x * S, y * S);
+        }
+      }
+      this.placeTownStructures();
+      return;
+    }
 
+    this.mapGraphics.clear();
     for (let y = 0; y < TILES_Y; y++) {
       for (let x = 0; x < TILES_X; x++) {
         this.drawTile(x, y, this.terrainGrid[y][x]);
+      }
+    }
+  }
+
+  // Scatter buildings on 'town' terrain across a coarse lattice so they read
+  // as villages rather than a solid wall of houses.
+  private placeTownStructures(): void {
+    this.townSprites.forEach(s => s.destroy());
+    this.townSprites = [];
+
+    const S = MAP_TILE_SIZE;
+    const houses = ['s_cottage', 's_manor', 's_tower'];
+    for (let y = 0; y < TILES_Y; y++) {
+      for (let x = 0; x < TILES_X; x++) {
+        if (this.terrainGrid[y][x] !== 'town') continue;
+        if (x % 3 !== 0 || y % 3 !== 0) continue;
+
+        const key = houses[(x * 7 + y * 13) % houses.length];
+        const img = this.add.image(x * S + S / 2, y * S + S, 'world-tileset', key);
+        img.setOrigin(0.5, 1); // anchor building base at the tile's bottom edge
+        img.setScale((S * 2) / img.width); // ~2 tiles wide
+        this.mapContainer.add(img);
+        this.townSprites.push(img);
       }
     }
   }
@@ -695,6 +789,8 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private animateWater(): void {
+    // Tileset water is static pixel art; skip the procedural wave redraw
+    if (this.useTileset) return;
     for (let y = 0; y < TILES_Y; y++) {
       for (let x = 0; x < TILES_X; x++) {
         if (this.terrainGrid[y][x] === 'water') {
