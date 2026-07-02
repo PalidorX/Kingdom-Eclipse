@@ -54,8 +54,13 @@ const PALETTE = {
 
 // Tile size for the RPG map (32x32 tileset)
 const MAP_TILE_SIZE = 32;
-const TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
-const TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
+// Tiles that fit the visible viewport...
+const VIEW_TILES_X = Math.ceil(GAME_WIDTH / MAP_TILE_SIZE);
+const VIEW_TILES_Y = Math.ceil(GAME_HEIGHT / MAP_TILE_SIZE);
+// ...plus a margin of extra tiles on every side so the map can be panned.
+const PAN_MARGIN_TILES = 8;
+const TILES_X = VIEW_TILES_X + PAN_MARGIN_TILES * 2;
+const TILES_Y = VIEW_TILES_Y + PAN_MARGIN_TILES * 2;
 
 // How many meters each tile represents (smaller = more zoomed in)
 const METERS_PER_TILE = 5;
@@ -104,6 +109,17 @@ export class WorldScene extends Phaser.Scene {
   private useTileset = false;
   // One entry per real OSM building: tile-space centroid + footprint size.
   private buildingPlacements: { cx: number; cy: number; w: number; h: number }[] = [];
+
+  // Panning: a parent container holding the map + markers that can be dragged.
+  private worldContainer!: Phaser.GameObjects.Container;
+  private isPanning = false;
+  private panStartX = 0;
+  private panStartY = 0;
+  private panOriginX = 0;
+  private panOriginY = 0;
+  private maxPanX = 0;
+  private maxPanY = 0;
+  private recenterBtn: Phaser.GameObjects.Container | null = null;
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
@@ -141,8 +157,19 @@ export class WorldScene extends Phaser.Scene {
       };
     }
 
+    // Parent container that can be dragged to pan the whole world.
+    this.worldContainer = this.add.container(0, 0);
+
+    // The world grid is larger than the viewport; offset the map layer so the
+    // player (grid centre) sits at screen centre when not panned.
+    const baseX = (GAME_WIDTH - TILES_X * MAP_TILE_SIZE) / 2;
+    const baseY = (GAME_HEIGHT - TILES_Y * MAP_TILE_SIZE) / 2;
+    this.maxPanX = (TILES_X * MAP_TILE_SIZE - GAME_WIDTH) / 2;
+    this.maxPanY = (TILES_Y * MAP_TILE_SIZE - GAME_HEIGHT) / 2;
+
     // Create map container for all map elements
-    this.mapContainer = this.add.container(0, 0);
+    this.mapContainer = this.add.container(baseX, baseY);
+    this.worldContainer.add(this.mapContainer);
 
     // Initialize terrain grid
     this.initializeTerrainGrid();
@@ -158,8 +185,17 @@ export class WorldScene extends Phaser.Scene {
 
     this.createPlayerMarker();
     this.createResourceMarkers();
+    // Player and markers live in the world so they pan with the terrain. The
+    // player sits at the grid centre (= screen centre when centred).
+    this.playerMarker.setPosition((TILES_X * MAP_TILE_SIZE) / 2 + baseX, (TILES_Y * MAP_TILE_SIZE) / 2 + baseY);
+    this.worldContainer.add(this.playerMarker);
+    this.resourceMarkers.forEach(m => this.worldContainer.add(m));
+    this.dungeonMarkers.forEach(m => this.worldContainer.add(m));
+
+    this.setupWorldPanning();
     this.createUI();
     this.createMapToggle();
+    this.createRecenterButton();
     this.createRealMapOverlay();
     this.createDebugUI();
     this.initGeolocation();
@@ -1106,6 +1142,70 @@ export class WorldScene extends Phaser.Scene {
     this.mapContainer.setVisible(true);
   }
 
+  // Drag anywhere on the RPG map to pan; clamped to the generated world.
+  private setupWorldPanning(): void {
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (this.isRealMapView) return;
+      this.isPanning = true;
+      this.panStartX = p.x;
+      this.panStartY = p.y;
+      this.panOriginX = this.worldContainer.x;
+      this.panOriginY = this.worldContainer.y;
+    });
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (!this.isPanning || !p.isDown || this.isRealMapView) return;
+      const nx = this.panOriginX + (p.x - this.panStartX);
+      const ny = this.panOriginY + (p.y - this.panStartY);
+      this.worldContainer.x = Phaser.Math.Clamp(nx, -this.maxPanX, this.maxPanX);
+      this.worldContainer.y = Phaser.Math.Clamp(ny, -this.maxPanY, this.maxPanY);
+      this.updateRecenterVisibility();
+    });
+    this.input.on('pointerup', () => {
+      this.isPanning = false;
+    });
+  }
+
+  // A crosshair button (shown only when panned) that eases back to the player.
+  private createRecenterButton(): void {
+    const c = this.add.container(46, GAME_HEIGHT - 46);
+    const g = this.add.graphics();
+    g.fillStyle(0x1a2040, 0.95);
+    g.fillCircle(0, 0, 20);
+    g.lineStyle(2, 0x4080c0, 1);
+    g.strokeCircle(0, 0, 20);
+    g.lineStyle(2, 0x80c0ff, 1);
+    g.strokeCircle(0, 0, 7);
+    g.lineBetween(0, -14, 0, -9);
+    g.lineBetween(0, 9, 0, 14);
+    g.lineBetween(-14, 0, -9, 0);
+    g.lineBetween(9, 0, 14, 0);
+    c.add(g);
+    c.setDepth(260);
+    c.setVisible(false);
+
+    g.setInteractive(new Phaser.Geom.Circle(0, 0, 20), Phaser.Geom.Circle.Contains);
+    g.on('pointerdown', () => this.recenterMap());
+    this.recenterBtn = c;
+  }
+
+  private recenterMap(): void {
+    this.isPanning = false;
+    this.tweens.add({
+      targets: this.worldContainer,
+      x: 0,
+      y: 0,
+      duration: 300,
+      ease: 'Cubic.easeOut',
+      onComplete: () => this.updateRecenterVisibility(),
+    });
+  }
+
+  private updateRecenterVisibility(): void {
+    if (!this.recenterBtn) return;
+    const panned = Math.abs(this.worldContainer.x) > 2 || Math.abs(this.worldContainer.y) > 2;
+    this.recenterBtn.setVisible(panned && !this.isRealMapView);
+  }
+
   private createRealMapOverlay(): void {
     const iframe = document.createElement('iframe');
     iframe.id = 'real-map-overlay';
@@ -1156,23 +1256,21 @@ export class WorldScene extends Phaser.Scene {
 
     const lat = this.currentPosition.latitude;
     const lon = this.currentPosition.longitude;
-    const zoom = 18;
 
-    const bbox = this.calculateBbox(lat, lon, zoom);
-    el.src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lon}`;
-  }
+    // Match the real map's coverage to the RPG viewport (same real-world area)
+    const latDelta = (VIEW_TILES_Y * METERS_PER_TILE) / 111000;
+    const lonDelta = (VIEW_TILES_X * METERS_PER_TILE) / (111000 * Math.cos(lat * Math.PI / 180));
+    const west = lon - lonDelta / 2;
+    const east = lon + lonDelta / 2;
+    const south = lat - latDelta / 2;
+    const north = lat + latDelta / 2;
 
-  private calculateBbox(lat: number, lon: number, zoom: number): string {
-    const delta = 0.003 / Math.pow(2, zoom - 16);
-    const west = lon - delta;
-    const east = lon + delta;
-    const south = lat - delta * 0.7;
-    const north = lat + delta * 0.7;
-    return `${west},${south},${east},${north}`;
+    el.src = `https://www.openstreetmap.org/export/embed.html?bbox=${west},${south},${east},${north}&layer=mapnik&marker=${lat},${lon}`;
   }
 
   private toggleMapView(): void {
     this.isRealMapView = !this.isRealMapView;
+    this.updateRecenterVisibility(); // hidden on the real map
 
     if (this.isRealMapView) {
       if (this.realMapElement) {
