@@ -62,17 +62,27 @@ const METERS_PER_TILE = 5;
 
 type TerrainType = 'water' | 'grass' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
 
-// Solid fill tile (col,row) in the 8x23 world tileset for each terrain type.
-// Frames are registered on the 'world-tileset' texture in defineTilesetFrames().
-const TERRAIN_FRAME: Record<TerrainType, string> = {
-  grass: 't_grass',
-  park: 't_grass',
-  water: 't_water',
-  forest: 't_forest',
-  path: 't_road',
-  mountain: 't_mountain',
-  sand: 't_sand',
-  town: 't_grass',
+// Each tileable terrain is a 4x4 corner-blob autotile block in the sheet,
+// laid out in canonical order: the tile for corner-mask m sits at local
+// (m & 3, m >> 2) within the block. Value is the block's [col, row] origin.
+const AUTOTILE_BLOCKS: Record<string, [number, number]> = {
+  water: [0, 1],
+  forest: [4, 1],
+  mountain: [0, 5],
+  road: [4, 5],
+  sand: [0, 9],
+};
+
+// Terrain type -> autotile block key, or null to draw the plain grass base.
+const TERRAIN_BLOCK: Record<TerrainType, string | null> = {
+  water: 'water',
+  forest: 'forest',
+  mountain: 'mountain',
+  path: 'road',
+  sand: 'sand',
+  grass: null,
+  park: null,
+  town: null,
 };
 
 export class WorldScene extends Phaser.Scene {
@@ -95,7 +105,7 @@ export class WorldScene extends Phaser.Scene {
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
-  private isRealMapView: boolean = true; // Start with real map view
+  private isRealMapView: boolean = false; // Start with the RPG tileset view
   private realMapElement: HTMLIFrameElement | null = null;
   private mapToggleBtn!: Phaser.GameObjects.Text;
   private mapToggleBg!: Phaser.GameObjects.Graphics;
@@ -510,11 +520,13 @@ export class WorldScene extends Phaser.Scene {
       if (!tex.has(name)) tex.add(name, 0, col * 32, row * 32, 32, 32);
     };
     cell('t_grass', 0, 0);
-    cell('t_water', 3, 4);
-    cell('t_forest', 4, 1);
-    cell('t_mountain', 3, 8);
-    cell('t_road', 7, 8);
-    cell('t_sand', 3, 12);
+
+    // Register all 16 corner-blob frames for each autotile terrain
+    for (const [key, [bc, br]] of Object.entries(AUTOTILE_BLOCKS)) {
+      for (let m = 0; m < 16; m++) {
+        cell(`at_${key}_${m}`, bc + (m & 3), br + (m >> 2));
+      }
+    }
 
     const rect = (name: string, x: number, y: number, w: number, h: number) => {
       if (!tex.has(name)) tex.add(name, 0, x, y, w, h);
@@ -549,7 +561,7 @@ export class WorldScene extends Phaser.Scene {
       const S = MAP_TILE_SIZE;
       for (let y = 0; y < TILES_Y; y++) {
         for (let x = 0; x < TILES_X; x++) {
-          const frame = TERRAIN_FRAME[this.terrainGrid[y][x]] || 't_grass';
+          const frame = this.autotileFrame(x, y);
           this.terrainRT.drawFrame('world-tileset', frame, x * S, y * S);
         }
       }
@@ -563,6 +575,36 @@ export class WorldScene extends Phaser.Scene {
         this.drawTile(x, y, this.terrainGrid[y][x]);
       }
     }
+  }
+
+  // Pick the tileset frame for a cell. Autotile terrains choose one of 16
+  // corner-blob tiles based on which of the 4 corners are backed by the same
+  // terrain; grass/park/town fall back to the plain grass base tile.
+  private autotileFrame(x: number, y: number): string {
+    const terr = this.terrainGrid[y][x];
+    const key = TERRAIN_BLOCK[terr];
+    if (!key) return 't_grass';
+
+    // A neighbour counts as "same" if it maps to the same autotile block.
+    // Off-grid neighbours count as same so blobs don't round off at screen edges.
+    const same = (nx: number, ny: number): boolean => {
+      if (nx < 0 || ny < 0 || nx >= TILES_X || ny >= TILES_Y) return true;
+      return TERRAIN_BLOCK[this.terrainGrid[ny][nx]] === key;
+    };
+
+    const n = same(x, y - 1);
+    const s = same(x, y + 1);
+    const e = same(x + 1, y);
+    const w = same(x - 1, y);
+
+    // Corner is "filled" when both orthogonal neighbours touching it match.
+    let mask = 0;
+    if (n && w) mask |= 1; // top-left
+    if (n && e) mask |= 2; // top-right
+    if (s && e) mask |= 4; // bottom-right
+    if (s && w) mask |= 8; // bottom-left
+
+    return `at_${key}_${mask}`;
   }
 
   // Scatter buildings on 'town' terrain across a coarse lattice so they read
@@ -986,15 +1028,15 @@ export class WorldScene extends Phaser.Scene {
 
   private createMapToggle(): void {
     this.mapToggleBg = this.add.graphics();
-    // Start with real map style (blue) since isRealMapView defaults to true
-    this.mapToggleBg.fillStyle(0x4060a0, 1);
+    // Start with RPG style (green) since we open on the RPG tileset view
+    this.mapToggleBg.fillStyle(0x206020, 1);
     this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
-    this.mapToggleBg.lineStyle(1, 0x80a0e0, 1);
+    this.mapToggleBg.lineStyle(1, 0x40a040, 1);
     this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
     this.mapToggleBg.setDepth(250);
 
-    // Button says "RPG MAP" since we're showing real map by default
-    this.mapToggleBtn = this.add.text(GAME_WIDTH - 52, 46, 'RPG MAP', {
+    // Button says "REAL MAP" since we're showing the RPG map by default
+    this.mapToggleBtn = this.add.text(GAME_WIDTH - 52, 46, 'REAL MAP', {
       fontSize: '10px',
       color: '#80ff80',
       fontStyle: 'bold',
@@ -1011,8 +1053,8 @@ export class WorldScene extends Phaser.Scene {
     this.mapToggleBg.on('pointerover', () => this.mapToggleBtn.setColor('#ffff80'));
     this.mapToggleBg.on('pointerout', () => this.mapToggleBtn.setColor('#80ff80'));
 
-    // Hide RPG map container since we start with real map
-    this.mapContainer.setVisible(false);
+    // RPG map container is visible from the start
+    this.mapContainer.setVisible(true);
   }
 
   private createRealMapOverlay(): void {
