@@ -1,0 +1,17 @@
+{
+  "name": "Kingdom Eclipse",
+  "short_name": "Kingdom",
+  "description": "A location-based mobile game blending Kingdom Building with Tactical Auto-Battles",
+  "start_url": "/Kingdom-Eclipse/",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

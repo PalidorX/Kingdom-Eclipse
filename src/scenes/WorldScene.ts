@@ -987,6 +987,9 @@ export class WorldScene extends Phaser.Scene {
         this.realMapElement.style.display = 'block';
       }
       this.mapContainer.setVisible(false);
+      this.playerMarker.setVisible(false);
+      this.resourceMarkers.forEach(m => m.setVisible(false));
+      this.dungeonMarkers.forEach(m => m.setVisible(false));
       this.mapToggleBtn.setText('RPG MAP');
       this.mapToggleBg.clear();
       this.mapToggleBg.fillStyle(0x4060a0, 1);
@@ -997,7 +1000,18 @@ export class WorldScene extends Phaser.Scene {
       if (this.realMapElement) {
         this.realMapElement.style.display = 'none';
       }
+      // Regenerate terrain from OSM data before showing
+      if (this.osmFeatures.length > 0) {
+        this.generateTerrainFromOSM();
+        this.drawMap();
+      } else {
+        // Fetch if we don't have data
+        this.fetchOSMData();
+      }
       this.mapContainer.setVisible(true);
+      this.playerMarker.setVisible(true);
+      this.resourceMarkers.forEach(m => m.setVisible(true));
+      this.dungeonMarkers.forEach(m => m.setVisible(true));
       this.mapToggleBtn.setText('REAL MAP');
       this.mapToggleBg.clear();
       this.mapToggleBg.fillStyle(0x206020, 1);
