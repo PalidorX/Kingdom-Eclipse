@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GAME_WIDTH, GAME_HEIGHT, BATTLE_GRID_SIZE } from '../config/constants';
+import { CharacterManager } from '../rendering/CharacterManager';
+import { Character3D } from '../rendering/Character3D';
 
 type BattlePhase = 'setup' | 'combat' | 'victory' | 'defeat';
 
@@ -32,7 +34,7 @@ interface BattleUnit {
   id: string;
   team: 'player' | 'enemy';
   container: Phaser.GameObjects.Container;
-  graphics: Phaser.GameObjects.Graphics;
+  character3D: Character3D | null;
   gridX: number;
   gridY: number;
   stats: {
@@ -78,11 +80,14 @@ export class BattleScene extends Phaser.Scene {
   private benchUnits: Phaser.GameObjects.Container[] = [];
   private validPlacementCells: { x: number; y: number }[] = [];
 
+  private characterManager!: CharacterManager;
+
   constructor() {
     super({ key: 'BattleScene' });
   }
 
   create(): void {
+    this.characterManager = new CharacterManager();
     this.resetState();
     this.calculateGridPosition();
     this.initializeGrid();
@@ -204,12 +209,17 @@ export class BattleScene extends Phaser.Scene {
     const worldY = this.gridStartY + gridY * TILE_SIZE + TILE_SIZE;
 
     const container = this.add.container(worldX, worldY);
-    const graphics = this.add.graphics();
-    container.add(graphics);
-
-    this.drawUnitGraphics(graphics, team, team === 'player' ? 'right' : 'left');
-
     container.setDepth(10 + gridY);
+
+    const unitId = `${team}-${Date.now()}-${Phaser.Math.Between(0, 999)}`;
+    const character3D = this.characterManager.createCharacter(
+      unitId,
+      team,
+      worldX,
+      worldY,
+      true
+    );
+    character3D.setFacing(team === 'player');
 
     const baseStats = {
       hp: Phaser.Math.Between(80, 120),
@@ -226,10 +236,10 @@ export class BattleScene extends Phaser.Scene {
     manaBar.setDepth(50);
 
     const unit: BattleUnit = {
-      id: `${team}-${Date.now()}-${Phaser.Math.Between(0, 999)}`,
+      id: unitId,
       team,
       container,
-      graphics,
+      character3D,
       gridX,
       gridY,
       stats: {
@@ -550,10 +560,10 @@ export class BattleScene extends Phaser.Scene {
         // Update facing direction
         if (unit.target.gridX < unit.gridX && unit.direction !== 'left') {
           unit.direction = 'left';
-          this.drawUnitGraphics(unit.graphics, unit.team, 'left');
+          unit.character3D?.setFacing(false);
         } else if (unit.target.gridX > unit.gridX && unit.direction !== 'right') {
           unit.direction = 'right';
-          this.drawUnitGraphics(unit.graphics, unit.team, 'right');
+          unit.character3D?.setFacing(true);
         }
 
         if (distance <= 1.5) {
@@ -643,7 +653,10 @@ export class BattleScene extends Phaser.Scene {
       x: worldX,
       y: worldY,
       duration: 150,
-      onUpdate: () => this.updateUnitBars(unit),
+      onUpdate: () => {
+        this.updateUnitBars(unit);
+        this.characterManager.setCharacterPosition(unit.id, unit.container.x, unit.container.y);
+      },
       onComplete: () => {
         unit.container.setDepth(10 + newY);
       },
@@ -657,6 +670,9 @@ export class BattleScene extends Phaser.Scene {
 
     target.stats.hp -= damage;
 
+    // Attack animation on 3D character
+    attacker.character3D?.attack();
+
     // Attack lunge animation
     const lungeX = target.container.x > attacker.container.x ? 8 : -8;
     this.tweens.add({
@@ -664,6 +680,9 @@ export class BattleScene extends Phaser.Scene {
       x: attacker.container.x + lungeX,
       duration: 50,
       yoyo: true,
+      onUpdate: () => {
+        this.characterManager.setCharacterPosition(attacker.id, attacker.container.x, attacker.container.y);
+      },
     });
 
     // Hit flash - shake the container
@@ -741,6 +760,9 @@ export class BattleScene extends Phaser.Scene {
     this.grid[unit.gridY][unit.gridX].occupied = false;
     this.grid[unit.gridY][unit.gridX].occupant = null;
 
+    // Remove 3D character
+    this.characterManager.removeCharacter(unit.id);
+
     this.tweens.add({
       targets: [unit.container, unit.hpBar, unit.manaBar],
       alpha: 0,
@@ -801,7 +823,12 @@ export class BattleScene extends Phaser.Scene {
     continueBg.on('pointerdown', () => this.scene.start('WorldScene'));
   }
 
-  update(): void {
-    // Combat handled by timer
+  update(time: number): void {
+    // Update 3D characters
+    this.characterManager.update(time);
+  }
+
+  shutdown(): void {
+    this.characterManager.dispose();
   }
 }
