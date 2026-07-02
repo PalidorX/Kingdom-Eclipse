@@ -1181,11 +1181,25 @@ export class WorldScene extends Phaser.Scene {
     g.lineBetween(9, 0, 14, 0);
     c.add(g);
     c.setDepth(260);
-    c.setVisible(false);
+
+    const label = this.add.text(0, 26, 'recenter', {
+      fontSize: '8px', color: '#80c0ff', fontFamily: 'monospace',
+    });
+    label.setOrigin(0.5, 0);
+    c.add(label);
 
     g.setInteractive(new Phaser.Geom.Circle(0, 0, 20), Phaser.Geom.Circle.Contains);
     g.on('pointerdown', () => this.recenterMap());
     this.recenterBtn = c;
+    this.updateRecenterVisibility();
+
+    // Brief hint that the map can be dragged
+    const hint = this.add.text(GAME_WIDTH / 2, 80, '↔ Drag to explore', {
+      fontSize: '11px', color: '#ffffff', backgroundColor: '#000000aa',
+      padding: { x: 8, y: 4 }, fontFamily: 'monospace',
+    });
+    hint.setOrigin(0.5).setDepth(260);
+    this.tweens.add({ targets: hint, alpha: 0, delay: 3500, duration: 1200, onComplete: () => hint.destroy() });
   }
 
   private recenterMap(): void {
@@ -1202,8 +1216,8 @@ export class WorldScene extends Phaser.Scene {
 
   private updateRecenterVisibility(): void {
     if (!this.recenterBtn) return;
-    const panned = Math.abs(this.worldContainer.x) > 2 || Math.abs(this.worldContainer.y) > 2;
-    this.recenterBtn.setVisible(panned && !this.isRealMapView);
+    // Always available on the RPG map so the control is discoverable.
+    this.recenterBtn.setVisible(!this.isRealMapView);
   }
 
   private createRealMapOverlay(): void {
