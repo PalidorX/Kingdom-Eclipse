@@ -79,7 +79,7 @@ export class WorldScene extends Phaser.Scene {
   private terrainGrid: TerrainType[][] = [];
   private animationTime: number = 0;
   private mapContainer!: Phaser.GameObjects.Container;
-  private isRealMapView: boolean = false;
+  private isRealMapView: boolean = true; // Start with real map view
   private realMapElement: HTMLIFrameElement | null = null;
   private mapToggleBtn!: Phaser.GameObjects.Text;
   private mapToggleBg!: Phaser.GameObjects.Graphics;
@@ -889,13 +889,15 @@ export class WorldScene extends Phaser.Scene {
 
   private createMapToggle(): void {
     this.mapToggleBg = this.add.graphics();
-    this.mapToggleBg.fillStyle(0x206020, 1);
+    // Start with real map style (blue) since isRealMapView defaults to true
+    this.mapToggleBg.fillStyle(0x4060a0, 1);
     this.mapToggleBg.fillRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
-    this.mapToggleBg.lineStyle(1, 0x40a040, 1);
+    this.mapToggleBg.lineStyle(1, 0x80a0e0, 1);
     this.mapToggleBg.strokeRoundedRect(GAME_WIDTH - 95, 35, 85, 22, 4);
     this.mapToggleBg.setDepth(250);
 
-    this.mapToggleBtn = this.add.text(GAME_WIDTH - 52, 46, 'REAL MAP', {
+    // Button says "RPG MAP" since we're showing real map by default
+    this.mapToggleBtn = this.add.text(GAME_WIDTH - 52, 46, 'RPG MAP', {
       fontSize: '10px',
       color: '#80ff80',
       fontStyle: 'bold',
@@ -911,6 +913,9 @@ export class WorldScene extends Phaser.Scene {
     this.mapToggleBg.on('pointerdown', () => this.toggleMapView());
     this.mapToggleBg.on('pointerover', () => this.mapToggleBtn.setColor('#ffff80'));
     this.mapToggleBg.on('pointerout', () => this.mapToggleBtn.setColor('#80ff80'));
+
+    // Hide RPG map container since we start with real map
+    this.mapContainer.setVisible(false);
   }
 
   private createRealMapOverlay(): void {
@@ -918,7 +923,8 @@ export class WorldScene extends Phaser.Scene {
     iframe.id = 'real-map-overlay';
     iframe.style.position = 'fixed';
     iframe.style.border = 'none';
-    iframe.style.display = 'none';
+    // Show by default since isRealMapView is true
+    iframe.style.display = this.isRealMapView ? 'block' : 'none';
     iframe.style.zIndex = '50';
     iframe.style.pointerEvents = 'none';
     iframe.setAttribute('loading', 'lazy');
