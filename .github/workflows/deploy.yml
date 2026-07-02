@@ -10,9 +10,13 @@ permissions:
   pages: write
   id-token: write
 
+# Allow one concurrent deployment, but let in-progress production
+# deploys finish instead of cancelling them. Cancelling a deploy
+# mid-flight leaves a stuck deployment in the github-pages environment,
+# which causes subsequent runs to hang until the 10-minute timeout.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
