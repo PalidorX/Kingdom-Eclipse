@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
+import { CharacterManager } from '../rendering/CharacterManager';
+import { CharacterTeam } from '../rendering/Character3D';
 
 // RPG Maker style - 32x32 tiles, characters are 2 tiles tall
 const TILE_SIZE = 32;
@@ -81,7 +83,7 @@ interface Character {
   type: 'hero' | 'visitor' | 'villager';
   gridX: number;
   gridY: number;
-  container: Phaser.GameObjects.Container;
+  labelContainer: Phaser.GameObjects.Container; // For name label only
   path: { x: number; y: number }[];
   pathIndex: number;
   isMoving: boolean;
@@ -105,11 +107,17 @@ export class KingdomScene extends Phaser.Scene {
   private cameraX = 0;
   private cameraY = 0;
 
+  // 3D Character rendering
+  private characterManager!: CharacterManager;
+
   constructor() {
     super({ key: 'KingdomScene' });
   }
 
   create(): void {
+    // Initialize 3D character manager
+    this.characterManager = new CharacterManager();
+
     this.groundLayer = this.add.container(0, 0);
     this.objectLayer = this.add.container(0, 0);
     this.characterLayer = this.add.container(0, 0);
@@ -137,10 +145,22 @@ export class KingdomScene extends Phaser.Scene {
     this.time.delayedCall(2000, () => this.spawnVisitor());
   }
 
+  shutdown(): void {
+    // Clean up 3D resources when scene shuts down
+    if (this.characterManager) {
+      this.characterManager.clear();
+    }
+  }
+
   private updateCameraPosition(): void {
     this.groundLayer.setPosition(this.cameraX, this.cameraY);
     this.objectLayer.setPosition(this.cameraX, this.cameraY);
     this.characterLayer.setPosition(this.cameraX, this.cameraY);
+
+    // Sync 3D character positions with camera offset
+    if (this.characterManager) {
+      this.characterManager.setCameraOffset(this.cameraX, this.cameraY);
+    }
   }
 
   private initializeGrid(): void {
@@ -563,15 +583,26 @@ export class KingdomScene extends Phaser.Scene {
     const px = gridX * TILE_SIZE + TILE_SIZE / 2;
     const py = gridY * TILE_SIZE + TILE_SIZE;
 
-    const container = this.add.container(px, py);
-    this.characterLayer.add(container);
+    // Create 3D character
+    const team: CharacterTeam = type === 'hero' ? 'player' : type === 'visitor' ? 'neutral' : 'neutral';
+    const char3D = this.characterManager.createCharacter(
+      id,
+      team,
+      px + this.cameraX,
+      py + this.cameraY,
+      type === 'hero' // Only hero gets full equipment
+    );
 
-    const graphics = this.add.graphics();
-    container.add(graphics);
+    // Give visitors a sword
+    if (type === 'visitor') {
+      char3D.equipSword();
+    }
 
-    this.drawCharacter(graphics, type, 'down');
+    // Create label container (for hover labels - positioned in 2D)
+    const labelContainer = this.add.container(px, py - 40);
+    this.characterLayer.add(labelContainer);
 
-    const label = this.add.text(0, -70, name, {
+    const label = this.add.text(0, 0, name, {
       fontSize: '9px',
       color: '#ffffff',
       backgroundColor: '#000000cc',
@@ -579,18 +610,21 @@ export class KingdomScene extends Phaser.Scene {
     });
     label.setOrigin(0.5, 1);
     label.setVisible(false);
-    container.add(label);
+    labelContainer.add(label);
 
-    container.setSize(TILE_SIZE, TILE_SIZE * 2);
-    container.setInteractive();
-    container.on('pointerover', () => label.setVisible(true));
-    container.on('pointerout', () => label.setVisible(false));
-    container.on('pointerdown', () => this.showCharacterInfo(id, name, type));
+    // Create invisible hitbox for interaction
+    const hitbox = this.add.rectangle(px, py - 20, TILE_SIZE, TILE_SIZE * 2, 0x000000, 0);
+    this.characterLayer.add(hitbox);
+    hitbox.setInteractive();
+    hitbox.on('pointerover', () => label.setVisible(true));
+    hitbox.on('pointerout', () => label.setVisible(false));
+    hitbox.on('pointerdown', () => this.showCharacterInfo(id, name, type));
 
-    container.setDepth(py);
+    // Store hitbox reference in label container for position updates
+    labelContainer.setData('hitbox', hitbox);
 
     const character: Character = {
-      id, name, type, gridX, gridY, container,
+      id, name, type, gridX, gridY, labelContainer,
       path: [], pathIndex: 0, isMoving: false, direction: 'down',
     };
     this.characters.push(character);
@@ -604,98 +638,6 @@ export class KingdomScene extends Phaser.Scene {
     }
 
     return character;
-  }
-
-  private drawCharacter(
-    graphics: Phaser.GameObjects.Graphics,
-    type: string,
-    direction: string
-  ): void {
-    graphics.clear();
-
-    // Characters are 32x64 (2 tiles tall)
-    // Shadow
-    graphics.fillStyle(0x000000, 0.3);
-    graphics.fillEllipse(0, 0, 24, 8);
-
-    // Body colors based on type
-    let shirtColor = 0x4466cc;
-    let shirtHighlight = 0x5588ee;
-    let pantsColor = 0x444466;
-
-    if (type === 'visitor') {
-      shirtColor = 0x44aa44;
-      shirtHighlight = 0x66cc66;
-      pantsColor = 0x446644;
-    } else if (type === 'villager') {
-      shirtColor = 0x886644;
-      shirtHighlight = 0xaa8866;
-      pantsColor = 0x554433;
-    }
-
-    // Legs/pants
-    graphics.fillStyle(pantsColor, 1);
-    graphics.fillRect(-8, -16, 7, 16);
-    graphics.fillRect(1, -16, 7, 16);
-
-    // Feet
-    graphics.fillStyle(0x443322, 1);
-    graphics.fillRect(-9, -4, 8, 4);
-    graphics.fillRect(1, -4, 8, 4);
-
-    // Body/shirt
-    graphics.fillStyle(shirtColor, 1);
-    graphics.fillRect(-10, -36, 20, 22);
-    // Shirt highlight
-    graphics.fillStyle(shirtHighlight, 1);
-    graphics.fillRect(-8, -34, 6, 16);
-
-    // Arms
-    graphics.fillStyle(shirtColor, 1);
-    graphics.fillRect(-14, -34, 5, 18);
-    graphics.fillRect(9, -34, 5, 18);
-    // Hands
-    graphics.fillStyle(PALETTE.skin, 1);
-    graphics.fillRect(-13, -18, 4, 6);
-    graphics.fillRect(9, -18, 4, 6);
-
-    // Head
-    graphics.fillStyle(PALETTE.skin, 1);
-    graphics.fillCircle(0, -46, 10);
-    // Head shadow
-    graphics.fillStyle(PALETTE.skinShadow, 1);
-    graphics.fillRect(-8, -46, 4, 8);
-
-    // Hair
-    graphics.fillStyle(PALETTE.hair, 1);
-    if (direction === 'down' || direction === 'left' || direction === 'right') {
-      graphics.fillRect(-10, -56, 20, 10);
-      graphics.fillRect(-10, -52, 20, 4);
-    }
-    if (direction === 'up') {
-      graphics.fillRect(-10, -58, 20, 14);
-    }
-    if (direction === 'left') {
-      graphics.fillRect(-12, -54, 4, 10);
-    }
-    if (direction === 'right') {
-      graphics.fillRect(8, -54, 4, 10);
-    }
-
-    // Face (only visible from front/sides)
-    if (direction !== 'up') {
-      // Eyes
-      graphics.fillStyle(0xffffff, 1);
-      graphics.fillRect(-6, -48, 5, 4);
-      graphics.fillRect(1, -48, 5, 4);
-      graphics.fillStyle(0x000000, 1);
-      graphics.fillRect(-4, -47, 2, 3);
-      graphics.fillRect(3, -47, 2, 3);
-
-      // Mouth
-      graphics.fillStyle(0x000000, 0.3);
-      graphics.fillRect(-3, -40, 6, 2);
-    }
   }
 
   private wanderCharacter(character: Character): void {
@@ -747,6 +689,7 @@ export class KingdomScene extends Phaser.Scene {
   private moveAlongPath(character: Character): void {
     if (character.pathIndex >= character.path.length) {
       character.isMoving = false;
+      this.characterManager.setCharacterWalking(character.id, false);
       return;
     }
 
@@ -762,21 +705,41 @@ export class KingdomScene extends Phaser.Scene {
       character.direction = dy > 0 ? 'down' : 'up';
     }
 
-    const graphics = character.container.getAt(0) as Phaser.GameObjects.Graphics;
-    this.drawCharacter(graphics, character.type, character.direction);
+    // Update 3D character facing and walking
+    this.characterManager.setCharacterFacing(character.id, character.direction === 'right' || character.direction === 'down');
+    this.characterManager.setCharacterWalking(character.id, true);
 
+    // Get hitbox from label container
+    const hitbox = character.labelContainer.getData('hitbox') as Phaser.GameObjects.Rectangle;
+
+    // Animate label container
     this.tweens.add({
-      targets: character.container,
+      targets: character.labelContainer,
       x: px,
-      y: py,
+      y: py - 40,
       duration: 250,
+      onUpdate: () => {
+        // Sync 3D character position during tween
+        this.characterManager.setCharacterPosition(
+          character.id,
+          character.labelContainer.x + this.cameraX,
+          character.labelContainer.y + 40 + this.cameraY
+        );
+      },
       onComplete: () => {
         character.gridX = next.x;
         character.gridY = next.y;
-        character.container.setDepth(py);
         character.pathIndex++;
         this.moveAlongPath(character);
       },
+    });
+
+    // Animate hitbox separately
+    this.tweens.add({
+      targets: hitbox,
+      x: px,
+      y: py - 20,
+      duration: 250,
     });
   }
 
@@ -1085,10 +1048,16 @@ export class KingdomScene extends Phaser.Scene {
     return n - Math.floor(n);
   }
 
-  update(): void {
+  update(time: number): void {
+    // Update 3D character rendering
+    if (this.characterManager) {
+      this.characterManager.update(time);
+    }
+
+    // Update label depths
     for (const char of this.characters) {
       const py = char.gridY * TILE_SIZE + TILE_SIZE;
-      char.container.setDepth(py);
+      char.labelContainer.setDepth(py);
     }
   }
 }
