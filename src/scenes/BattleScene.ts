@@ -1,13 +1,38 @@
 import Phaser from 'phaser';
-import EasyStar from 'easystarjs';
 import { GAME_WIDTH, GAME_HEIGHT, BATTLE_GRID_SIZE } from '../config/constants';
 
 type BattlePhase = 'setup' | 'combat' | 'victory' | 'defeat';
 
+// 32px tiles, characters are 2 tiles tall (32x64)
+const TILE_SIZE = 32;
+
+// Color palette matching KingdomScene
+const PALETTE = {
+  skin: 0xffd8b8,
+  skinShadow: 0xe8c8a8,
+  hair: 0x4a3728,
+
+  // Team colors
+  playerShirt: 0x4466cc,
+  playerHighlight: 0x5588ee,
+  playerPants: 0x444466,
+
+  enemyShirt: 0xcc4444,
+  enemyHighlight: 0xee6666,
+  enemyPants: 0x664444,
+
+  // Grid
+  gridLight: 0x4a6080,
+  gridDark: 0x2d4060,
+  gridHighlight: 0x4a90d9,
+  obstacle: 0x6b6b6b,
+};
+
 interface BattleUnit {
   id: string;
   team: 'player' | 'enemy';
-  sprite: Phaser.GameObjects.Sprite;
+  container: Phaser.GameObjects.Container;
+  graphics: Phaser.GameObjects.Graphics;
   gridX: number;
   gridY: number;
   stats: {
@@ -17,14 +42,15 @@ interface BattleUnit {
     maxMana: number;
     attack: number;
     defense: number;
-    dexterity: number; // Affects attack speed
-    intelligence: number; // Affects skill power
+    dexterity: number;
+    intelligence: number;
   };
   attackCooldown: number;
   currentCooldown: number;
   target: BattleUnit | null;
   hpBar: Phaser.GameObjects.Graphics;
   manaBar: Phaser.GameObjects.Graphics;
+  direction: 'left' | 'right';
 }
 
 interface GridCell {
@@ -40,7 +66,6 @@ export class BattleScene extends Phaser.Scene {
   private gridGraphics!: Phaser.GameObjects.Graphics;
   private gridStartX: number = 0;
   private gridStartY: number = 0;
-  private cellSize: number = 40;
 
   private playerUnits: BattleUnit[] = [];
   private enemyUnits: BattleUnit[] = [];
@@ -48,12 +73,9 @@ export class BattleScene extends Phaser.Scene {
 
   private phase: BattlePhase = 'setup';
   private combatTick: number = 0;
-  private tickRate: number = 100; // ms per tick
+  private tickRate: number = 100;
 
-  private pathfinder!: EasyStar.js;
-
-  // Setup phase
-  private benchUnits: Phaser.GameObjects.Sprite[] = [];
+  private benchUnits: Phaser.GameObjects.Container[] = [];
   private validPlacementCells: { x: number; y: number }[] = [];
 
   constructor() {
@@ -64,14 +86,12 @@ export class BattleScene extends Phaser.Scene {
     this.resetState();
     this.calculateGridPosition();
     this.initializeGrid();
-    this.initializePathfinder();
     this.createBattleGrid();
     this.generateObstacles();
     this.spawnEnemies();
     this.createBench();
     this.createUI();
 
-    // Launch UI scene
     this.scene.launch('UIScene');
   }
 
@@ -86,10 +106,9 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private calculateGridPosition(): void {
-    // Center the 8x8 grid on screen
-    const gridPixelSize = BATTLE_GRID_SIZE * this.cellSize;
+    const gridPixelSize = BATTLE_GRID_SIZE * TILE_SIZE;
     this.gridStartX = (GAME_WIDTH - gridPixelSize) / 2;
-    this.gridStartY = 80; // Leave room for header
+    this.gridStartY = 70;
   }
 
   private initializeGrid(): void {
@@ -97,8 +116,7 @@ export class BattleScene extends Phaser.Scene {
       this.grid[y] = [];
       for (let x = 0; x < BATTLE_GRID_SIZE; x++) {
         this.grid[y][x] = {
-          x,
-          y,
+          x, y,
           walkable: true,
           occupied: false,
           occupant: null,
@@ -106,7 +124,6 @@ export class BattleScene extends Phaser.Scene {
       }
     }
 
-    // Define valid placement cells (bottom two rows for player)
     this.validPlacementCells = [];
     for (let y = BATTLE_GRID_SIZE - 2; y < BATTLE_GRID_SIZE; y++) {
       for (let x = 0; x < BATTLE_GRID_SIZE; x++) {
@@ -115,54 +132,32 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  private initializePathfinder(): void {
-    this.pathfinder = new EasyStar.js();
-    this.updatePathfinderGrid();
-  }
-
-  private updatePathfinderGrid(): void {
-    const walkableGrid: number[][] = [];
-    for (let y = 0; y < BATTLE_GRID_SIZE; y++) {
-      walkableGrid[y] = [];
-      for (let x = 0; x < BATTLE_GRID_SIZE; x++) {
-        walkableGrid[y][x] = this.grid[y][x].walkable && !this.grid[y][x].occupied ? 0 : 1;
-      }
-    }
-    this.pathfinder.setGrid(walkableGrid);
-    this.pathfinder.setAcceptableTiles([0]);
-    this.pathfinder.enableDiagonals();
-  }
-
   private createBattleGrid(): void {
     this.gridGraphics = this.add.graphics();
 
     for (let y = 0; y < BATTLE_GRID_SIZE; y++) {
       for (let x = 0; x < BATTLE_GRID_SIZE; x++) {
-        const worldX = this.gridStartX + x * this.cellSize;
-        const worldY = this.gridStartY + y * this.cellSize;
+        const worldX = this.gridStartX + x * TILE_SIZE;
+        const worldY = this.gridStartY + y * TILE_SIZE;
 
-        // Checkerboard pattern
         const isLight = (x + y) % 2 === 0;
-        const color = isLight ? 0x4a5568 : 0x2d3748;
+        const color = isLight ? PALETTE.gridLight : PALETTE.gridDark;
 
         this.gridGraphics.fillStyle(color, 1);
-        this.gridGraphics.fillRect(worldX, worldY, this.cellSize, this.cellSize);
+        this.gridGraphics.fillRect(worldX, worldY, TILE_SIZE, TILE_SIZE);
 
-        // Highlight valid placement cells during setup
-        if (this.validPlacementCells.some((c) => c.x === x && c.y === y)) {
-          this.gridGraphics.fillStyle(0x4a90d9, 0.2);
-          this.gridGraphics.fillRect(worldX, worldY, this.cellSize, this.cellSize);
+        if (this.validPlacementCells.some(c => c.x === x && c.y === y)) {
+          this.gridGraphics.fillStyle(PALETTE.gridHighlight, 0.2);
+          this.gridGraphics.fillRect(worldX, worldY, TILE_SIZE, TILE_SIZE);
         }
 
-        // Grid lines
         this.gridGraphics.lineStyle(1, 0x1a202c, 0.5);
-        this.gridGraphics.strokeRect(worldX, worldY, this.cellSize, this.cellSize);
+        this.gridGraphics.strokeRect(worldX, worldY, TILE_SIZE, TILE_SIZE);
       }
     }
   }
 
   private generateObstacles(): void {
-    // Add random obstacles to the middle rows
     const obstacleCount = Phaser.Math.Between(2, 4);
 
     for (let i = 0; i < obstacleCount; i++) {
@@ -172,20 +167,19 @@ export class BattleScene extends Phaser.Scene {
       if (this.grid[y][x].walkable && !this.grid[y][x].occupied) {
         this.grid[y][x].walkable = false;
 
-        // Draw obstacle
-        const worldX = this.gridStartX + x * this.cellSize;
-        const worldY = this.gridStartY + y * this.cellSize;
+        const worldX = this.gridStartX + x * TILE_SIZE;
+        const worldY = this.gridStartY + y * TILE_SIZE;
 
-        this.gridGraphics.fillStyle(0x6b6b6b, 1);
-        this.gridGraphics.fillRect(worldX + 4, worldY + 4, this.cellSize - 8, this.cellSize - 8);
+        // Draw rock obstacle
+        this.gridGraphics.fillStyle(PALETTE.obstacle, 1);
+        this.gridGraphics.fillRect(worldX + 4, worldY + 8, TILE_SIZE - 8, TILE_SIZE - 10);
+        this.gridGraphics.fillStyle(0x888888, 1);
+        this.gridGraphics.fillRect(worldX + 6, worldY + 10, TILE_SIZE - 14, 6);
       }
     }
-
-    this.updatePathfinderGrid();
   }
 
   private spawnEnemies(): void {
-    // Spawn enemies in top two rows
     const enemyCount = Phaser.Math.Between(2, 4);
     const spawnPositions: { x: number; y: number }[] = [];
 
@@ -206,15 +200,17 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private createUnit(team: 'player' | 'enemy', gridX: number, gridY: number): BattleUnit {
-    const worldX = this.gridStartX + gridX * this.cellSize + this.cellSize / 2;
-    const worldY = this.gridStartY + gridY * this.cellSize + this.cellSize / 2;
+    const worldX = this.gridStartX + gridX * TILE_SIZE + TILE_SIZE / 2;
+    const worldY = this.gridStartY + gridY * TILE_SIZE + TILE_SIZE;
 
-    const textureKey = team === 'player' ? 'char-ally' : 'char-enemy';
-    const sprite = this.add.sprite(worldX, worldY, textureKey);
-    sprite.setScale(2);
-    sprite.setDepth(10);
+    const container = this.add.container(worldX, worldY);
+    const graphics = this.add.graphics();
+    container.add(graphics);
 
-    // Random stats with some variance
+    this.drawUnitGraphics(graphics, team, team === 'player' ? 'right' : 'left');
+
+    container.setDepth(10 + gridY);
+
     const baseStats = {
       hp: Phaser.Math.Between(80, 120),
       mana: 0,
@@ -224,18 +220,16 @@ export class BattleScene extends Phaser.Scene {
       intelligence: Phaser.Math.Between(5, 15),
     };
 
-    // HP bar
     const hpBar = this.add.graphics();
-    hpBar.setDepth(11);
-
-    // Mana bar
+    hpBar.setDepth(50);
     const manaBar = this.add.graphics();
-    manaBar.setDepth(11);
+    manaBar.setDepth(50);
 
     const unit: BattleUnit = {
       id: `${team}-${Date.now()}-${Phaser.Math.Between(0, 999)}`,
       team,
-      sprite,
+      container,
+      graphics,
       gridX,
       gridY,
       stats: {
@@ -248,11 +242,11 @@ export class BattleScene extends Phaser.Scene {
       target: null,
       hpBar,
       manaBar,
+      direction: team === 'player' ? 'right' : 'left',
     };
 
     this.updateUnitBars(unit);
 
-    // Mark grid cell as occupied
     this.grid[gridY][gridX].occupied = true;
     this.grid[gridY][gridX].occupant = unit;
 
@@ -263,33 +257,111 @@ export class BattleScene extends Phaser.Scene {
     }
     this.allUnits.push(unit);
 
-    this.updatePathfinderGrid();
-
     return unit;
   }
 
+  private drawUnitGraphics(
+    graphics: Phaser.GameObjects.Graphics,
+    team: string,
+    direction: string
+  ): void {
+    graphics.clear();
+
+    // Characters are 32x64 (2 tiles tall)
+    const shirtColor = team === 'player' ? PALETTE.playerShirt : PALETTE.enemyShirt;
+    const shirtHighlight = team === 'player' ? PALETTE.playerHighlight : PALETTE.enemyHighlight;
+    const pantsColor = team === 'player' ? PALETTE.playerPants : PALETTE.enemyPants;
+
+    // Shadow
+    graphics.fillStyle(0x000000, 0.3);
+    graphics.fillEllipse(0, 0, 24, 8);
+
+    // Legs/pants
+    graphics.fillStyle(pantsColor, 1);
+    graphics.fillRect(-8, -16, 7, 16);
+    graphics.fillRect(1, -16, 7, 16);
+
+    // Feet
+    graphics.fillStyle(0x443322, 1);
+    graphics.fillRect(-9, -4, 8, 4);
+    graphics.fillRect(1, -4, 8, 4);
+
+    // Body/shirt
+    graphics.fillStyle(shirtColor, 1);
+    graphics.fillRect(-10, -36, 20, 22);
+    graphics.fillStyle(shirtHighlight, 1);
+    graphics.fillRect(-8, -34, 6, 16);
+
+    // Arms
+    graphics.fillStyle(shirtColor, 1);
+    graphics.fillRect(-14, -34, 5, 18);
+    graphics.fillRect(9, -34, 5, 18);
+    // Hands
+    graphics.fillStyle(PALETTE.skin, 1);
+    graphics.fillRect(-13, -18, 4, 6);
+    graphics.fillRect(9, -18, 4, 6);
+
+    // Head
+    graphics.fillStyle(PALETTE.skin, 1);
+    graphics.fillCircle(0, -46, 10);
+    graphics.fillStyle(PALETTE.skinShadow, 1);
+    graphics.fillRect(-8, -46, 4, 8);
+
+    // Hair
+    graphics.fillStyle(PALETTE.hair, 1);
+    graphics.fillRect(-10, -56, 20, 10);
+    graphics.fillRect(-10, -52, 20, 4);
+
+    if (direction === 'left') {
+      graphics.fillRect(-12, -54, 4, 10);
+    } else if (direction === 'right') {
+      graphics.fillRect(8, -54, 4, 10);
+    }
+
+    // Eyes
+    graphics.fillStyle(0xffffff, 1);
+    graphics.fillRect(-6, -48, 5, 4);
+    graphics.fillRect(1, -48, 5, 4);
+    graphics.fillStyle(0x000000, 1);
+    if (direction === 'left') {
+      graphics.fillRect(-5, -47, 2, 3);
+      graphics.fillRect(2, -47, 2, 3);
+    } else {
+      graphics.fillRect(-3, -47, 2, 3);
+      graphics.fillRect(4, -47, 2, 3);
+    }
+
+    // Mouth
+    graphics.fillStyle(0x000000, 0.3);
+    graphics.fillRect(-3, -40, 6, 2);
+
+    // Weapon indicator for enemies (sword/axe shape)
+    if (team === 'enemy') {
+      graphics.fillStyle(0x888888, 1);
+      graphics.fillRect(12, -30, 3, 16);
+      graphics.fillStyle(0xaaaaaa, 1);
+      graphics.fillRect(10, -32, 7, 4);
+    }
+  }
+
   private calculateAttackCooldown(dexterity: number): number {
-    // Higher dexterity = faster attacks
-    // Base: 20 ticks, min: 5 ticks
     return Math.max(5, 25 - dexterity);
   }
 
   private updateUnitBars(unit: BattleUnit): void {
-    const barWidth = 30;
+    const barWidth = 28;
     const barHeight = 4;
-    const barX = unit.sprite.x - barWidth / 2;
-    const hpBarY = unit.sprite.y - 20;
-    const manaBarY = hpBarY + 5;
+    const barX = unit.container.x - barWidth / 2;
+    const hpBarY = unit.container.y - 66;
+    const manaBarY = hpBarY + 6;
 
-    // HP bar
     unit.hpBar.clear();
     unit.hpBar.fillStyle(0x333333, 1);
     unit.hpBar.fillRect(barX, hpBarY, barWidth, barHeight);
     unit.hpBar.fillStyle(0x32cd32, 1);
-    const hpWidth = (unit.stats.hp / unit.stats.maxHp) * barWidth;
+    const hpWidth = Math.max(0, (unit.stats.hp / unit.stats.maxHp) * barWidth);
     unit.hpBar.fillRect(barX, hpBarY, hpWidth, barHeight);
 
-    // Mana bar
     unit.manaBar.clear();
     unit.manaBar.fillStyle(0x333333, 1);
     unit.manaBar.fillRect(barX, manaBarY, barWidth, barHeight);
@@ -299,58 +371,65 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private createBench(): void {
-    // Create bench area at bottom of screen
-    const benchY = GAME_HEIGHT - 80;
+    const benchY = GAME_HEIGHT - 90;
     const benchBg = this.add.graphics();
-    benchBg.fillStyle(0x1a1a2e, 0.9);
-    benchBg.fillRect(0, benchY - 10, GAME_WIDTH, 90);
+    benchBg.fillStyle(0x1a2040, 0.95);
+    benchBg.fillRect(0, benchY - 20, GAME_WIDTH, 100);
+    benchBg.lineStyle(2, 0x4080c0, 1);
+    benchBg.lineBetween(0, benchY - 20, GAME_WIDTH, benchY - 20);
 
-    const benchLabel = this.add.text(GAME_WIDTH / 2, benchY - 5, 'Drag units to battle grid', {
-      fontSize: '12px',
-      color: '#888888',
+    const benchLabel = this.add.text(GAME_WIDTH / 2, benchY - 8, 'Drag units to battle grid', {
+      fontSize: '11px',
+      color: '#888899',
     });
     benchLabel.setOrigin(0.5);
 
-    // Create bench units (player's available units)
     const unitCount = 4;
     const spacing = GAME_WIDTH / (unitCount + 1);
 
     for (let i = 0; i < unitCount; i++) {
       const x = spacing * (i + 1);
-      const unit = this.add.sprite(x, benchY + 30, 'char-ally');
-      unit.setScale(2);
-      unit.setInteractive({ draggable: true });
+      const container = this.add.container(x, benchY + 40);
 
-      unit.on('dragstart', () => {
-        unit.setAlpha(0.7);
+      const graphics = this.add.graphics();
+      this.drawUnitGraphics(graphics, 'player', 'right');
+      container.add(graphics);
+
+      container.setSize(TILE_SIZE, TILE_SIZE * 2);
+      container.setInteractive({ draggable: true });
+
+      const originalX = x;
+      const originalY = benchY + 40;
+
+      container.on('dragstart', () => {
+        container.setAlpha(0.8);
+        container.setDepth(100);
       });
 
-      unit.on('drag', (_pointer: Phaser.Input.Pointer, dragX: number, dragY: number) => {
-        unit.x = dragX;
-        unit.y = dragY;
+      container.on('drag', (_pointer: Phaser.Input.Pointer, dragX: number, dragY: number) => {
+        container.x = dragX;
+        container.y = dragY;
       });
 
-      unit.on('dragend', (pointer: Phaser.Input.Pointer) => {
-        unit.setAlpha(1);
+      container.on('dragend', (pointer: Phaser.Input.Pointer) => {
+        container.setAlpha(1);
+        container.setDepth(1);
 
-        // Check if dropped on valid cell
-        const gridX = Math.floor((pointer.x - this.gridStartX) / this.cellSize);
-        const gridY = Math.floor((pointer.y - this.gridStartY) / this.cellSize);
+        const gridX = Math.floor((pointer.x - this.gridStartX) / TILE_SIZE);
+        const gridY = Math.floor((pointer.y - this.gridStartY) / TILE_SIZE);
 
         if (this.isValidPlacement(gridX, gridY)) {
-          // Place unit on grid
           this.createUnit('player', gridX, gridY);
-          unit.destroy();
-          const index = this.benchUnits.indexOf(unit);
+          container.destroy();
+          const index = this.benchUnits.indexOf(container);
           if (index > -1) this.benchUnits.splice(index, 1);
         } else {
-          // Return to bench
-          unit.x = spacing * (i + 1);
-          unit.y = benchY + 30;
+          container.x = originalX;
+          container.y = originalY;
         }
       });
 
-      this.benchUnits.push(unit);
+      this.benchUnits.push(container);
     }
   }
 
@@ -359,82 +438,90 @@ export class BattleScene extends Phaser.Scene {
       return false;
     }
 
-    const isValidCell = this.validPlacementCells.some((c) => c.x === gridX && c.y === gridY);
+    const isValidCell = this.validPlacementCells.some(c => c.x === gridX && c.y === gridY);
     const cell = this.grid[gridY]?.[gridX];
 
     return isValidCell && cell && cell.walkable && !cell.occupied;
   }
 
   private createUI(): void {
-    // Header
     const headerBg = this.add.graphics();
-    headerBg.fillStyle(0x1a1a2e, 0.9);
-    headerBg.fillRect(0, 0, GAME_WIDTH, 60);
+    headerBg.fillStyle(0x1a2040, 0.95);
+    headerBg.fillRect(0, 0, GAME_WIDTH, 55);
+    headerBg.lineStyle(2, 0x4080c0, 1);
+    headerBg.lineBetween(0, 55, GAME_WIDTH, 55);
     headerBg.setDepth(100);
 
-    const title = this.add.text(GAME_WIDTH / 2, 20, 'Battle', {
-      fontSize: '20px',
+    const title = this.add.text(GAME_WIDTH / 2, 16, 'BATTLE', {
+      fontSize: '16px',
       color: '#ffffff',
       fontStyle: 'bold',
+      fontFamily: 'monospace',
     });
     title.setOrigin(0.5, 0);
     title.setDepth(101);
 
-    // Phase indicator
-    const phaseText = this.add.text(GAME_WIDTH / 2, 45, 'Setup Phase', {
-      fontSize: '12px',
+    const phaseText = this.add.text(GAME_WIDTH / 2, 38, 'Setup Phase - Place Your Units', {
+      fontSize: '11px',
       color: '#4a90d9',
     });
     phaseText.setOrigin(0.5);
     phaseText.setDepth(101);
     this.data.set('phaseText', phaseText);
 
-    // Back button
-    const backBtn = this.add.text(20, 30, '< Exit', {
-      fontSize: '14px',
-      color: '#dc143c',
+    const backBtn = this.add.text(15, 28, '< EXIT', {
+      fontSize: '11px',
+      color: '#cc4444',
+      fontFamily: 'monospace',
     });
     backBtn.setOrigin(0, 0.5);
     backBtn.setDepth(101);
     backBtn.setInteractive();
     backBtn.on('pointerdown', () => this.scene.start('WorldScene'));
+    backBtn.on('pointerover', () => backBtn.setColor('#ff6666'));
+    backBtn.on('pointerout', () => backBtn.setColor('#cc4444'));
 
-    // Start battle button
-    const startBtn = this.add.text(GAME_WIDTH - 20, 30, 'Start Battle', {
-      fontSize: '14px',
-      color: '#32cd32',
-      backgroundColor: '#1a1a2e',
-      padding: { x: 10, y: 5 },
+    const startBg = this.add.graphics();
+    startBg.fillStyle(0x44aa44, 1);
+    startBg.fillRoundedRect(GAME_WIDTH - 100, 18, 85, 26, 4);
+    startBg.setDepth(101);
+
+    const startBtn = this.add.text(GAME_WIDTH - 58, 31, 'START', {
+      fontSize: '12px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      fontFamily: 'monospace',
     });
-    startBtn.setOrigin(1, 0.5);
-    startBtn.setDepth(101);
-    startBtn.setInteractive();
-    startBtn.on('pointerdown', () => this.startCombat());
+    startBtn.setOrigin(0.5);
+    startBtn.setDepth(102);
+
+    startBg.setInteractive(new Phaser.Geom.Rectangle(GAME_WIDTH - 100, 18, 85, 26), Phaser.Geom.Rectangle.Contains);
+    startBg.on('pointerdown', () => this.startCombat());
+
     this.data.set('startBtn', startBtn);
+    this.data.set('startBg', startBg);
   }
 
   private startCombat(): void {
     if (this.playerUnits.length === 0) {
-      // Need at least one unit
       this.cameras.main.shake(100, 0.01);
       return;
     }
 
     this.phase = 'combat';
 
-    // Update UI
     const phaseText = this.data.get('phaseText') as Phaser.GameObjects.Text;
     phaseText.setText('Combat Phase');
-    phaseText.setColor('#dc143c');
+    phaseText.setColor('#cc4444');
 
     const startBtn = this.data.get('startBtn') as Phaser.GameObjects.Text;
+    const startBg = this.data.get('startBg') as Phaser.GameObjects.Graphics;
     startBtn.setVisible(false);
+    startBg.setVisible(false);
 
-    // Remove remaining bench units
-    this.benchUnits.forEach((u) => u.destroy());
+    this.benchUnits.forEach(u => u.destroy());
     this.benchUnits = [];
 
-    // Start combat loop
     this.time.addEvent({
       delay: this.tickRate,
       callback: this.combatLoop,
@@ -448,14 +535,11 @@ export class BattleScene extends Phaser.Scene {
 
     this.combatTick++;
 
-    // Process each unit
     for (const unit of this.allUnits) {
       if (unit.stats.hp <= 0) continue;
 
-      // Reduce cooldown
       unit.currentCooldown--;
 
-      // Find target if needed
       if (!unit.target || unit.target.stats.hp <= 0) {
         unit.target = this.findNearestEnemy(unit);
       }
@@ -463,35 +547,39 @@ export class BattleScene extends Phaser.Scene {
       if (unit.target) {
         const distance = this.getGridDistance(unit, unit.target);
 
+        // Update facing direction
+        if (unit.target.gridX < unit.gridX && unit.direction !== 'left') {
+          unit.direction = 'left';
+          this.drawUnitGraphics(unit.graphics, unit.team, 'left');
+        } else if (unit.target.gridX > unit.gridX && unit.direction !== 'right') {
+          unit.direction = 'right';
+          this.drawUnitGraphics(unit.graphics, unit.team, 'right');
+        }
+
         if (distance <= 1.5) {
-          // In attack range
           if (unit.currentCooldown <= 0) {
             this.performAttack(unit, unit.target);
             unit.currentCooldown = unit.attackCooldown;
           }
         } else {
-          // Move towards target
           this.moveTowardsTarget(unit, unit.target);
         }
       }
 
-      // Gain mana over time
       unit.stats.mana = Math.min(unit.stats.maxMana, unit.stats.mana + 1);
       this.updateUnitBars(unit);
 
-      // Check for ultimate skill
       if (unit.stats.mana >= unit.stats.maxMana) {
         this.performUltimate(unit);
       }
     }
 
-    // Check win/lose conditions
     this.checkBattleEnd();
   }
 
   private findNearestEnemy(unit: BattleUnit): BattleUnit | null {
     const enemies = unit.team === 'player' ? this.enemyUnits : this.playerUnits;
-    const aliveEnemies = enemies.filter((e) => e.stats.hp > 0);
+    const aliveEnemies = enemies.filter(e => e.stats.hp > 0);
 
     if (aliveEnemies.length === 0) return null;
 
@@ -514,13 +602,11 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private moveTowardsTarget(unit: BattleUnit, target: BattleUnit): void {
-    // Simple movement towards target (one cell per several ticks)
-    if (this.combatTick % 3 !== 0) return; // Move every 3 ticks
+    if (this.combatTick % 3 !== 0) return;
 
     const dx = Math.sign(target.gridX - unit.gridX);
     const dy = Math.sign(target.gridY - unit.gridY);
 
-    // Try to move in primary direction
     const newX = unit.gridX + dx;
     const newY = unit.gridY + dy;
 
@@ -541,78 +627,76 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private moveUnit(unit: BattleUnit, newX: number, newY: number): void {
-    // Clear old position
     this.grid[unit.gridY][unit.gridX].occupied = false;
     this.grid[unit.gridY][unit.gridX].occupant = null;
 
-    // Set new position
     unit.gridX = newX;
     unit.gridY = newY;
     this.grid[newY][newX].occupied = true;
     this.grid[newY][newX].occupant = unit;
 
-    // Animate movement
-    const worldX = this.gridStartX + newX * this.cellSize + this.cellSize / 2;
-    const worldY = this.gridStartY + newY * this.cellSize + this.cellSize / 2;
+    const worldX = this.gridStartX + newX * TILE_SIZE + TILE_SIZE / 2;
+    const worldY = this.gridStartY + newY * TILE_SIZE + TILE_SIZE;
 
     this.tweens.add({
-      targets: [unit.sprite, unit.hpBar, unit.manaBar],
+      targets: unit.container,
       x: worldX,
       y: worldY,
       duration: 150,
+      onUpdate: () => this.updateUnitBars(unit),
+      onComplete: () => {
+        unit.container.setDepth(10 + newY);
+      },
     });
-
-    // Update bars position
-    this.updateUnitBars(unit);
   }
 
   private performAttack(attacker: BattleUnit, target: BattleUnit): void {
-    // Calculate damage
     const baseDamage = attacker.stats.attack;
     const defense = target.stats.defense;
     const damage = Math.max(1, baseDamage - defense / 2 + Phaser.Math.Between(-3, 3));
 
     target.stats.hp -= damage;
 
-    // Visual feedback
+    // Attack lunge animation
+    const lungeX = target.container.x > attacker.container.x ? 8 : -8;
     this.tweens.add({
-      targets: attacker.sprite,
-      x: target.sprite.x,
+      targets: attacker.container,
+      x: attacker.container.x + lungeX,
       duration: 50,
       yoyo: true,
     });
 
+    // Hit flash - shake the container
     this.tweens.add({
-      targets: target.sprite,
-      tint: 0xff0000,
-      duration: 100,
-      onComplete: () => target.sprite.clearTint(),
+      targets: target.container,
+      x: target.container.x + 4,
+      duration: 30,
+      yoyo: true,
+      repeat: 2,
     });
 
     // Damage number
-    const dmgText = this.add.text(target.sprite.x, target.sprite.y - 30, `-${Math.round(damage)}`, {
+    const dmgText = this.add.text(target.container.x, target.container.y - 70, `-${Math.round(damage)}`, {
       fontSize: '14px',
       color: '#ff4444',
       fontStyle: 'bold',
     });
     dmgText.setOrigin(0.5);
-    dmgText.setDepth(50);
+    dmgText.setDepth(60);
 
     this.tweens.add({
       targets: dmgText,
-      y: dmgText.y - 30,
+      y: dmgText.y - 25,
       alpha: 0,
-      duration: 800,
+      duration: 600,
       onComplete: () => dmgText.destroy(),
     });
 
-    // Attacker gains mana on hit
     attacker.stats.mana = Math.min(attacker.stats.maxMana, attacker.stats.mana + 10);
 
     this.updateUnitBars(target);
     this.updateUnitBars(attacker);
 
-    // Check if target died
     if (target.stats.hp <= 0) {
       this.killUnit(target);
     }
@@ -621,23 +705,20 @@ export class BattleScene extends Phaser.Scene {
   private performUltimate(unit: BattleUnit): void {
     unit.stats.mana = 0;
 
-    // Ultimate: AOE damage based on intelligence
     const damage = unit.stats.intelligence * 2;
     const enemies = unit.team === 'player' ? this.enemyUnits : this.playerUnits;
 
-    // Visual effect
-    const circle = this.add.circle(unit.sprite.x, unit.sprite.y, 10, 0xffd700, 0.8);
+    const circle = this.add.circle(unit.container.x, unit.container.y - 30, 10, 0xffd700, 0.8);
     circle.setDepth(5);
 
     this.tweens.add({
       targets: circle,
-      radius: 100,
+      radius: 80,
       alpha: 0,
-      duration: 500,
+      duration: 400,
       onComplete: () => circle.destroy(),
     });
 
-    // Damage all enemies
     for (const enemy of enemies) {
       if (enemy.stats.hp <= 0) continue;
 
@@ -657,18 +738,17 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private killUnit(unit: BattleUnit): void {
-    // Clear grid
     this.grid[unit.gridY][unit.gridX].occupied = false;
     this.grid[unit.gridY][unit.gridX].occupant = null;
 
-    // Death animation
     this.tweens.add({
-      targets: [unit.sprite, unit.hpBar, unit.manaBar],
+      targets: [unit.container, unit.hpBar, unit.manaBar],
       alpha: 0,
-      scale: 0.5,
+      scaleX: 0.5,
+      scaleY: 0.5,
       duration: 300,
       onComplete: () => {
-        unit.sprite.destroy();
+        unit.container.destroy();
         unit.hpBar.destroy();
         unit.manaBar.destroy();
       },
@@ -676,8 +756,8 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private checkBattleEnd(): void {
-    const alivePlayerUnits = this.playerUnits.filter((u) => u.stats.hp > 0);
-    const aliveEnemyUnits = this.enemyUnits.filter((u) => u.stats.hp > 0);
+    const alivePlayerUnits = this.playerUnits.filter(u => u.stats.hp > 0);
+    const aliveEnemyUnits = this.enemyUnits.filter(u => u.stats.hp > 0);
 
     if (aliveEnemyUnits.length === 0) {
       this.endBattle('victory');
@@ -688,37 +768,40 @@ export class BattleScene extends Phaser.Scene {
 
   private endBattle(result: 'victory' | 'defeat'): void {
     this.phase = result;
-
-    // Stop combat loop
     this.time.removeAllEvents();
 
-    // Show result
     const overlay = this.add.graphics();
     overlay.fillStyle(0x000000, 0.7);
     overlay.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     overlay.setDepth(200);
 
     const resultText = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 30, result.toUpperCase(), {
-      fontSize: '48px',
-      color: result === 'victory' ? '#32cd32' : '#dc143c',
+      fontSize: '36px',
+      color: result === 'victory' ? '#44dd44' : '#dd4444',
       fontStyle: 'bold',
+      fontFamily: 'monospace',
     });
     resultText.setOrigin(0.5);
     resultText.setDepth(201);
 
+    const continueBg = this.add.graphics();
+    continueBg.fillStyle(0x4080c0, 1);
+    continueBg.fillRoundedRect(GAME_WIDTH / 2 - 60, GAME_HEIGHT / 2 + 20, 120, 40, 6);
+    continueBg.setDepth(201);
+
     const continueBtn = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 40, 'Continue', {
-      fontSize: '20px',
+      fontSize: '16px',
       color: '#ffffff',
-      backgroundColor: '#4a90d9',
-      padding: { x: 20, y: 10 },
+      fontFamily: 'monospace',
     });
     continueBtn.setOrigin(0.5);
-    continueBtn.setDepth(201);
-    continueBtn.setInteractive();
-    continueBtn.on('pointerdown', () => this.scene.start('WorldScene'));
+    continueBtn.setDepth(202);
+
+    continueBg.setInteractive(new Phaser.Geom.Rectangle(GAME_WIDTH / 2 - 60, GAME_HEIGHT / 2 + 20, 120, 40), Phaser.Geom.Rectangle.Contains);
+    continueBg.on('pointerdown', () => this.scene.start('WorldScene'));
   }
 
   update(): void {
-    // Main game loop updates handled by combatLoop timer
+    // Combat handled by timer
   }
 }

@@ -87,6 +87,7 @@ export class WorldScene extends Phaser.Scene {
   private osmFeatures: OSMFeature[] = [];
   private isLoadingOSM: boolean = false;
   private lastFetchPosition: { lat: number; lon: number } | null = null;
+  private lastMapPosition: { lat: number; lon: number } | null = null;
   private loadingText!: Phaser.GameObjects.Text;
 
   constructor() {
@@ -932,6 +933,12 @@ export class WorldScene extends Phaser.Scene {
     this.positionRealMapOverlay(iframe);
     this.updateRealMapUrl(iframe);
 
+    // Track initial position to prevent unnecessary reloads
+    this.lastMapPosition = {
+      lat: this.currentPosition.latitude,
+      lon: this.currentPosition.longitude,
+    };
+
     document.body.appendChild(iframe);
     this.realMapElement = iframe;
 
@@ -1160,9 +1167,26 @@ export class WorldScene extends Phaser.Scene {
   private onGeolocationUpdate(position: GeolocationPosition): void {
     if (this.isDebugMode) return;
 
+    const newLat = position.coords.latitude;
+    const newLon = position.coords.longitude;
+
+    // Check if position changed significantly (more than ~20 meters)
+    const MIN_DISTANCE = 20;
+    if (this.lastMapPosition) {
+      const dist = this.haversineDistance(
+        this.lastMapPosition.lat,
+        this.lastMapPosition.lon,
+        newLat,
+        newLon
+      );
+      if (dist < MIN_DISTANCE) {
+        return; // Position hasn't changed enough, skip update
+      }
+    }
+
     this.currentPosition = {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
+      latitude: newLat,
+      longitude: newLon,
       accuracy: position.coords.accuracy,
     };
 
@@ -1171,6 +1195,7 @@ export class WorldScene extends Phaser.Scene {
 
     if (this.isRealMapView) {
       this.updateRealMapUrl();
+      this.lastMapPosition = { lat: newLat, lon: newLon };
     }
   }
 

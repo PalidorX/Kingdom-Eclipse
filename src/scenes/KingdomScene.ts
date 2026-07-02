@@ -587,16 +587,6 @@ export class KingdomScene extends Phaser.Scene {
     container.on('pointerout', () => label.setVisible(false));
     container.on('pointerdown', () => this.showCharacterInfo(id, name, type));
 
-    // Idle bob
-    this.tweens.add({
-      targets: container,
-      y: py - 2,
-      duration: 600,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
-
     container.setDepth(py);
 
     const character: Character = {
