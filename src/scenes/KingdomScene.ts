@@ -88,6 +88,8 @@ interface Character {
   pathIndex: number;
   isMoving: boolean;
   direction: 'down' | 'up' | 'left' | 'right';
+  waitCount: number;
+  moveToken: number; // bumped on each new move so stale retries can be ignored
 }
 
 export class KingdomScene extends Phaser.Scene {
@@ -106,6 +108,13 @@ export class KingdomScene extends Phaser.Scene {
   private dragStartY = 0;
   private cameraX = 0;
   private cameraY = 0;
+
+  // Tiles currently occupied or reserved by a character (key "x,y"), so heroes
+  // never step into the same tile as another hero.
+  private occupied: Set<string> = new Set();
+  private buildMode = false;
+  private buildHint: Phaser.GameObjects.Text | null = null;
+  private suppressTap = false;
 
   // 3D Character rendering
   private characterManager!: CharacterManager;
@@ -500,6 +509,7 @@ export class KingdomScene extends Phaser.Scene {
     };
     this.buildings.push(building);
     this.updatePathfinderGrid();
+    this.onWorldChanged(); // heroes re-plan around the new footprint
   }
 
   private drawWindow(graphics: Phaser.GameObjects.Graphics, x: number, y: number): void {
@@ -651,9 +661,10 @@ export class KingdomScene extends Phaser.Scene {
 
     const character: Character = {
       id, name, type, gridX, gridY, labelContainer,
-      path: [], pathIndex: 0, isMoving: false, direction: 'down',
+      path: [], pathIndex: 0, isMoving: false, direction: 'down', waitCount: 0, moveToken: 0,
     };
     this.characters.push(character);
+    this.occupied.add(this.tileKey(gridX, gridY)); // reserve the starting tile
 
     if (type === 'villager') {
       this.time.addEvent({
@@ -694,8 +705,22 @@ export class KingdomScene extends Phaser.Scene {
     }
   }
 
+  private tileKey(x: number, y: number): string {
+    return `${x},${y}`;
+  }
+
   private moveCharacterTo(character: Character, targetX: number, targetY: number): void {
     if (character.isMoving) return;
+    character.waitCount = 0;
+    character.moveToken++;
+
+    // Route around other heroes standing in the world (dynamic obstacles).
+    this.pathfinder.stopAvoidingAllAdditionalPoints();
+    for (const other of this.characters) {
+      if (other === character) continue;
+      if (other.gridX === targetX && other.gridY === targetY) continue; // don't block the goal
+      this.pathfinder.avoidAdditionalPoint(other.gridX, other.gridY);
+    }
 
     this.pathfinder.findPath(
       character.gridX, character.gridY,
@@ -719,33 +744,76 @@ export class KingdomScene extends Phaser.Scene {
       return;
     }
 
-    const next = character.path[character.pathIndex];
-    const px = next.x * TILE_SIZE + TILE_SIZE / 2;
-    const py = next.y * TILE_SIZE + TILE_SIZE;
+    const startIdx = character.pathIndex;
+    const first = character.path[startIdx];
+    const curKey = this.tileKey(character.gridX, character.gridY);
+    const firstKey = this.tileKey(first.x, first.y);
 
-    const dx = next.x - character.gridX;
-    const dy = next.y - character.gridY;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      character.direction = dx > 0 ? 'right' : 'left';
-    } else {
-      character.direction = dy > 0 ? 'down' : 'up';
+    // If the very next tile is reserved by another hero, pause and retry.
+    // After a few stalls, re-plan around whatever is blocking us.
+    if (firstKey !== curKey && this.occupied.has(firstKey)) {
+      character.waitCount++;
+      this.characterManager.setCharacterWalking(character.id, false);
+      if (character.waitCount > 8) {
+        character.waitCount = 0;
+        const dest = character.path[character.path.length - 1];
+        character.isMoving = false;
+        this.moveCharacterTo(character, dest.x, dest.y);
+      } else {
+        const token = character.moveToken;
+        this.time.delayedCall(120, () => {
+          // Ignore this retry if the move was superseded (e.g. by a re-path)
+          if (character.isMoving && character.moveToken === token) {
+            this.moveAlongPath(character);
+          }
+        });
+      }
+      return;
+    }
+    character.waitCount = 0;
+
+    // Smoothing: glide across a straight run of same-direction tiles in one
+    // continuous tween instead of stopping on every tile.
+    const dirX = Math.sign(first.x - character.gridX);
+    const dirY = Math.sign(first.y - character.gridY);
+    let endIdx = startIdx;
+    while (endIdx + 1 < character.path.length) {
+      const a = character.path[endIdx];
+      const b = character.path[endIdx + 1];
+      if (Math.sign(b.x - a.x) !== dirX || Math.sign(b.y - a.y) !== dirY) break;
+      if (this.occupied.has(this.tileKey(b.x, b.y))) break; // stop before a reserved tile
+      endIdx++;
     }
 
-    // Update 3D character facing and walking
+    // Reserve every tile in the run so no one else enters it while we cross.
+    for (let i = startIdx; i <= endIdx; i++) {
+      const t = character.path[i];
+      this.occupied.add(this.tileKey(t.x, t.y));
+    }
+
+    const dest = character.path[endIdx];
+    const steps = endIdx - startIdx + 1;
+    const diagonal = dirX !== 0 && dirY !== 0;
+    const duration = steps * (diagonal ? 240 : 170); // constant speed, linear
+
+    if (dirX !== 0) character.direction = dirX > 0 ? 'right' : 'left';
+    else character.direction = dirY > 0 ? 'down' : 'up';
     this.characterManager.setCharacterFacing(character.id, character.direction === 'right' || character.direction === 'down');
     this.characterManager.setCharacterWalking(character.id, true);
 
-    // Get hitbox from label container
+    const px = dest.x * TILE_SIZE + TILE_SIZE / 2;
+    const py = dest.y * TILE_SIZE + TILE_SIZE;
     const hitbox = character.labelContainer.getData('hitbox') as Phaser.GameObjects.Rectangle;
+    const fromX = character.gridX;
+    const fromY = character.gridY;
 
-    // Animate label container
     this.tweens.add({
       targets: character.labelContainer,
       x: px,
       y: py - 40,
-      duration: 250,
+      duration,
+      ease: 'Linear',
       onUpdate: () => {
-        // Sync 3D character position during tween
         this.characterManager.setCharacterPosition(
           character.id,
           character.labelContainer.x + this.cameraX,
@@ -753,20 +821,59 @@ export class KingdomScene extends Phaser.Scene {
         );
       },
       onComplete: () => {
-        character.gridX = next.x;
-        character.gridY = next.y;
-        character.pathIndex++;
+        // Release the tile we left and every intermediate run tile; keep the
+        // destination reserved so we always hold the tile we're standing on.
+        this.occupied.delete(this.tileKey(fromX, fromY));
+        for (let i = startIdx; i < endIdx; i++) {
+          const t = character.path[i];
+          this.occupied.delete(this.tileKey(t.x, t.y));
+        }
+        this.occupied.add(this.tileKey(dest.x, dest.y)); // always hold our current tile
+        character.gridX = dest.x;
+        character.gridY = dest.y;
+        character.pathIndex = endIdx + 1;
         this.moveAlongPath(character);
       },
     });
 
-    // Animate hitbox separately
     this.tweens.add({
       targets: hitbox,
       x: px,
       y: py - 20,
-      duration: 250,
+      duration,
+      ease: 'Linear',
     });
+  }
+
+  // Re-plan any hero whose remaining route was blocked by a world change
+  // (e.g. a newly built house). Reservations are rebuilt from where everyone
+  // actually stands so stale reservations don't leak.
+  private onWorldChanged(): void {
+    this.occupied.clear();
+    for (const c of this.characters) {
+      this.occupied.add(this.tileKey(c.gridX, c.gridY));
+    }
+
+    for (const character of this.characters) {
+      if (!character.isMoving) continue;
+
+      let blocked = false;
+      for (let i = character.pathIndex; i < character.path.length; i++) {
+        const t = character.path[i];
+        if (!this.grid[t.y]?.[t.x]?.walkable) {
+          blocked = true;
+          break;
+        }
+      }
+      if (!blocked) continue;
+
+      const dest = character.path[character.path.length - 1];
+      const hitbox = character.labelContainer.getData('hitbox') as Phaser.GameObjects.Rectangle;
+      this.tweens.killTweensOf(character.labelContainer);
+      if (hitbox) this.tweens.killTweensOf(hitbox);
+      character.isMoving = false;
+      this.moveCharacterTo(character, dest.x, dest.y);
+    }
   }
 
   private setupInput(): void {
@@ -796,9 +903,59 @@ export class KingdomScene extends Phaser.Scene {
       }
     });
 
-    this.input.on('pointerup', () => {
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      const wasDrag =
+        Math.abs(pointer.x - this.dragStartX) > 8 ||
+        Math.abs(pointer.y - this.dragStartY) > 8;
       this.isDragging = false;
+
+      // Ignore the pointerup that belongs to a UI-button tap (e.g. BUILD).
+      if (this.suppressTap) {
+        this.suppressTap = false;
+        return;
+      }
+
+      // In build mode a tap (not a drag) drops a house on the targeted tile.
+      if (this.buildMode && !wasDrag) {
+        const gx = Math.floor((pointer.x - this.cameraX) / TILE_SIZE);
+        const gy = Math.floor((pointer.y - this.cameraY) / TILE_SIZE);
+        this.tryPlaceHouse(gx, gy);
+      }
     });
+  }
+
+  private setBuildMode(on: boolean): void {
+    this.buildMode = on;
+    if (on && !this.buildHint) {
+      this.buildHint = this.add.text(GAME_WIDTH / 2, 70, 'BUILD MODE — tap a clear spot to place a house', {
+        fontSize: '11px',
+        color: '#88ee88',
+        backgroundColor: '#0a1a0aee',
+        padding: { x: 8, y: 4 },
+        fontFamily: 'monospace',
+      });
+      this.buildHint.setOrigin(0.5, 0);
+      this.uiLayer.add(this.buildHint);
+    } else if (!on && this.buildHint) {
+      this.buildHint.destroy();
+      this.buildHint = null;
+    }
+  }
+
+  // Validate a 2x2 footprint is on-grid and fully walkable, then build there.
+  private tryPlaceHouse(gridX: number, gridY: number): void {
+    const w = 2;
+    const h = 2;
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) {
+        const tile = this.grid[gridY + dy]?.[gridX + dx];
+        if (!tile || !tile.walkable) return; // off-grid or blocked -> ignore tap
+        if (this.occupied.has(this.tileKey(gridX + dx, gridY + dy))) return; // a hero is standing here
+      }
+    }
+    const id = `built-${gridX}-${gridY}`;
+    this.createBuilding(id, 'Cottage', gridX, gridY, w, h, PALETTE.roofGreen, 1);
+    this.setBuildMode(false);
   }
 
   private showBuildingInfo(type: string, name: string, level: number): void {
@@ -1033,6 +1190,12 @@ export class KingdomScene extends Phaser.Scene {
     buildBtn.setInteractive();
     buildBtn.on('pointerover', () => buildBtn.setColor('#88ee88'));
     buildBtn.on('pointerout', () => buildBtn.setColor('#44aa44'));
+    buildBtn.on('pointerdown', () => {
+      this.suppressTap = true; // don't let this same tap place a house
+      this.setBuildMode(!this.buildMode);
+      buildBtn.setText(this.buildMode ? 'CANCEL' : 'BUILD');
+      buildBtn.setColor(this.buildMode ? '#ee8844' : '#44aa44');
+    });
     this.uiLayer.add(buildBtn);
 
     // Bottom nav
