@@ -521,6 +521,16 @@ export class WorldScene extends Phaser.Scene {
     };
     cell('t_grass', 0, 0);
 
+    // Clean, seamless interior tiles baked into row 0 (cells 1..5). The source
+    // block tiles carry grass/borders even on their "solid" tile, so filling a
+    // region would show a grid; these are used for fully-surrounded cells.
+    const cleanCols: Record<string, number> = {
+      water: 1, forest: 2, road: 3, sand: 4, mountain: 5,
+    };
+    for (const [key, col] of Object.entries(cleanCols)) {
+      cell(`clean_${key}`, col, 0);
+    }
+
     // Register all 16 corner-blob frames for each autotile terrain
     for (const [key, [bc, br]] of Object.entries(AUTOTILE_BLOCKS)) {
       for (let m = 0; m < 16; m++) {
@@ -604,6 +614,9 @@ export class WorldScene extends Phaser.Scene {
     if (s && e) mask |= 4; // bottom-right
     if (s && w) mask |= 8; // bottom-left
 
+    // Fully-surrounded cells use the clean seamless interior tile;
+    // boundary cells use the block's edge tile for the organic border.
+    if (mask === 15) return `clean_${key}`;
     return `at_${key}_${mask}`;
   }
 
