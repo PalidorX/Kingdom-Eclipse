@@ -176,11 +176,26 @@ export class WorldScene extends Phaser.Scene {
     this.createWorldMap();
     this.createLoadingIndicator();
 
-    // Use pre-loaded OSM data if available
-    if (initialOSMData) {
+    // Prefer a locally cached map so reloads at the same spot are identical.
+    // Fall back to the data BootScene pre-fetched, and seed the cache from it.
+    const cache = this.loadOSMCache();
+    if (cache && this.haversineDistance(cache.lat, cache.lon, this.currentPosition.latitude, this.currentPosition.longitude) < 60) {
+      // Pin the map centre to the cached location so it renders identically
+      this.currentPosition.latitude = cache.lat;
+      this.currentPosition.longitude = cache.lon;
+      this.parseOSMData(cache.data as Parameters<typeof this.parseOSMData>[0]);
+      this.generateTerrainFromOSM();
+      this.drawMap();
+      this.lastFetchPosition = { lat: cache.lat, lon: cache.lon };
+    } else if (initialOSMData) {
       this.parseOSMData(initialOSMData);
       this.generateTerrainFromOSM();
       this.drawMap();
+      this.saveOSMCache(this.currentPosition.latitude, this.currentPosition.longitude, initialOSMData);
+      this.lastFetchPosition = {
+        lat: this.currentPosition.latitude,
+        lon: this.currentPosition.longitude,
+      };
     }
 
     this.createPlayerMarker();
@@ -234,6 +249,28 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
+  // --- Local cache of the last fetched map, so reloads/small GPS jitter show
+  // the same map instead of reshuffling. Keeps only the most recent area. ---
+  private loadOSMCache(): { lat: number; lon: number; data: unknown } | null {
+    try {
+      const raw = localStorage.getItem('ke_osm_cache');
+      if (!raw) return null;
+      const c = JSON.parse(raw);
+      if (typeof c?.lat === 'number' && typeof c?.lon === 'number' && c?.data) return c;
+    } catch {
+      // ignore malformed/unavailable storage
+    }
+    return null;
+  }
+
+  private saveOSMCache(lat: number, lon: number, data: unknown): void {
+    try {
+      localStorage.setItem('ke_osm_cache', JSON.stringify({ lat, lon, data }));
+    } catch {
+      // storage full/unavailable - non-fatal
+    }
+  }
+
   private async fetchOSMData(): Promise<void> {
     if (this.isLoadingOSM) return;
 
@@ -246,6 +283,18 @@ export class WorldScene extends Phaser.Scene {
         this.currentPosition.longitude
       );
       if (dist < 50) return; // Don't refetch if moved less than 50m
+    }
+
+    // Reuse the cached map when we're still within ~60m of it (no reshuffle)
+    const cache = this.loadOSMCache();
+    if (cache && this.haversineDistance(cache.lat, cache.lon, this.currentPosition.latitude, this.currentPosition.longitude) < 60) {
+      this.currentPosition.latitude = cache.lat;
+      this.currentPosition.longitude = cache.lon;
+      this.parseOSMData(cache.data as Parameters<typeof this.parseOSMData>[0]);
+      this.generateTerrainFromOSM();
+      this.drawMap();
+      this.lastFetchPosition = { lat: cache.lat, lon: cache.lon };
+      return;
     }
 
     this.isLoadingOSM = true;
@@ -296,14 +345,24 @@ export class WorldScene extends Phaser.Scene {
         lat: this.currentPosition.latitude,
         lon: this.currentPosition.longitude,
       };
+      // Cache this area so a reload shows the same map
+      this.saveOSMCache(this.currentPosition.latitude, this.currentPosition.longitude, data);
 
       // Regenerate terrain from OSM data
       this.generateTerrainFromOSM();
       this.drawMap();
     } catch (error) {
       console.error('Failed to fetch OSM data:', error);
-      // Fall back to procedural generation
-      this.generateProceduralTerrain();
+      // Prefer the last cached map over random procedural terrain on failure
+      const cache = this.loadOSMCache();
+      if (cache) {
+        this.currentPosition.latitude = cache.lat;
+        this.currentPosition.longitude = cache.lon;
+        this.parseOSMData(cache.data as Parameters<typeof this.parseOSMData>[0]);
+        this.generateTerrainFromOSM();
+      } else {
+        this.generateProceduralTerrain();
+      }
       this.drawMap();
     } finally {
       this.isLoadingOSM = false;
