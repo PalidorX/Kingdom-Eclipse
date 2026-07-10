@@ -1,17 +1,11 @@
 {
   "name": "Kingdom Eclipse",
-  "short_name": "Kingdom",
-  "description": "A location-based mobile game blending Kingdom Building with Tactical Auto-Battles",
+  "short_name": "Eclipse",
+  "description": "Reclaim the world below the floating kingdoms",
   "start_url": "/Kingdom-Eclipse/",
   "display": "fullscreen",
   "orientation": "portrait",
-  "background_color": "#1a1a2e",
-  "theme_color": "#1a1a2e",
-  "icons": [
-    {
-      "src": "favicon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml"
-    }
-  ]
+  "background_color": "#0e1420",
+  "theme_color": "#0e1420",
+  "icons": []
 }
