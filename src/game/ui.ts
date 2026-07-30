@@ -1,4 +1,4 @@
-// Minimal shared UI kit: HUD bar, bottom nav, buttons, modal panels, toasts.
+// Shared UI kit: HUD, bottom nav (with lock states), buttons, modals, toasts.
 
 import Phaser from 'phaser';
 import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
@@ -8,10 +8,7 @@ export const UI_DEPTH = 1000;
 
 export function makeButton(
   scene: Phaser.Scene,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
+  x: number, y: number, w: number, h: number,
   label: string,
   onTap: () => void,
   opts: { color?: number; textColor?: string; fontSize?: string } = {}
@@ -29,6 +26,7 @@ export function makeButton(
     color: opts.textColor ?? '#ffffff',
     fontFamily: 'monospace',
     fontStyle: 'bold',
+    align: 'center',
   }).setOrigin(0.5);
   c.add(t);
   g.setInteractive(new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h), Phaser.Geom.Rectangle.Contains);
@@ -37,28 +35,24 @@ export function makeButton(
     onTap();
   });
   c.setData('label', t);
-  c.setData('bg', g);
   return c;
 }
 
 export function hud(scene: Phaser.Scene, title: string): { refresh: () => void } {
   const bar = scene.add.graphics().setDepth(UI_DEPTH);
   bar.fillStyle(0x101828, 0.96);
-  bar.fillRect(0, 0, GAME_WIDTH, 58);
+  bar.fillRect(0, 0, GAME_WIDTH, 56);
   bar.lineStyle(2, 0x3a5a9a, 1);
-  bar.lineBetween(0, 58, GAME_WIDTH, 58);
-
-  scene.add.text(GAME_WIDTH / 2, 12, title, {
-    fontSize: '15px', color: '#ffffff', fontFamily: 'monospace', fontStyle: 'bold',
+  bar.lineBetween(0, 56, GAME_WIDTH, 56);
+  scene.add.text(GAME_WIDTH / 2, 10, title, {
+    fontSize: '14px', color: '#ffffff', fontFamily: 'monospace', fontStyle: 'bold',
   }).setOrigin(0.5, 0).setDepth(UI_DEPTH + 1);
-
-  const res = scene.add.text(GAME_WIDTH / 2, 38, '', {
+  const res = scene.add.text(GAME_WIDTH / 2, 34, '', {
     fontSize: '11px', color: '#e8c860', fontFamily: 'monospace',
   }).setOrigin(0.5, 0).setDepth(UI_DEPTH + 1);
-
   const refresh = () => {
     const s = store.state;
-    res.setText(`⛃ ${s.gold}   🪵 ${s.wood}   🪨 ${s.stone}   ♜ Lv ${store.kingdomLevel()}`);
+    res.setText(`⛃${s.gold}  🪵${s.wood}  🪨${s.stone}  ◆${s.crystal}`);
   };
   refresh();
   return { refresh };
@@ -71,27 +65,29 @@ export function bottomNav(scene: Phaser.Scene, active: 'world' | 'kingdom'): voi
   g.lineStyle(2, 0x3a5a9a, 1);
   g.lineBetween(0, GAME_HEIGHT - 54, GAME_WIDTH, GAME_HEIGHT - 54);
 
-  const mk = (x: number, label: string, key: 'world' | 'kingdom', target: string) => {
+  const kingdomLocked = store.state.onboard === 'chest' || store.state.onboard === 'freeHero' || store.state.onboard === 'firstBattle';
+
+  const mk = (x: number, label: string, key: 'world' | 'kingdom', target: string, locked: boolean) => {
     const isActive = active === key;
-    const b = makeButton(scene, x, GAME_HEIGHT - 27, 120, 34, label, () => {
+    const b = makeButton(scene, x, GAME_HEIGHT - 27, 120, 34, locked ? `🔒 ${label}` : label, () => {
+      if (locked) { toast(scene, 'Win your first battle to unlock the Kingdom'); return; }
       if (!isActive) scene.scene.start(target);
-    }, { color: isActive ? 0x3a6acc : 0x1c2c4c });
+    }, { color: isActive ? 0x3a6acc : locked ? 0x141c30 : 0x1c2c4c });
     b.setDepth(UI_DEPTH + 1);
   };
-  mk(GAME_WIDTH / 2 - 70, 'WORLD', 'world', 'WorldScene');
-  mk(GAME_WIDTH / 2 + 70, 'KINGDOM', 'kingdom', 'KingdomScene');
+  mk(GAME_WIDTH / 2 - 70, 'WORLD', 'world', 'WorldScene', false);
+  mk(GAME_WIDTH / 2 + 70, 'KINGDOM', 'kingdom', 'KingdomScene', kingdomLocked);
 }
 
 export function toast(scene: Phaser.Scene, msg: string, color = '#ffffff'): void {
-  const t = scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 80, msg, {
+  const t = scene.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 78, msg, {
     fontSize: '12px', color, fontFamily: 'monospace',
     backgroundColor: '#000000dd', padding: { x: 10, y: 6 },
-    align: 'center', wordWrap: { width: GAME_WIDTH - 60 },
-  }).setOrigin(0.5, 1).setDepth(UI_DEPTH + 50);
-  scene.tweens.add({ targets: t, y: t.y - 16, alpha: 0, delay: 1700, duration: 500, onComplete: () => t.destroy() });
+    align: 'center', wordWrap: { width: GAME_WIDTH - 50 },
+  }).setOrigin(0.5, 1).setDepth(UI_DEPTH + 60);
+  scene.tweens.add({ targets: t, y: t.y - 14, alpha: 0, delay: 2100, duration: 500, onComplete: () => t.destroy() });
 }
 
-// Full-screen modal panel. Returns container + content area; tap X to close.
 export function modal(
   scene: Phaser.Scene,
   title: string,
@@ -99,26 +95,32 @@ export function modal(
 ): { root: Phaser.GameObjects.Container; close: () => void } {
   const root = scene.add.container(0, 0).setDepth(UI_DEPTH + 100);
   const dim = scene.add.graphics();
-  dim.fillStyle(0x000000, 0.7);
+  dim.fillStyle(0x000000, 0.72);
   dim.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
   dim.setInteractive(new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT), Phaser.Geom.Rectangle.Contains);
   dim.on('pointerdown', (_p: Phaser.Input.Pointer, _x: number, _y: number, ev: Phaser.Types.Input.EventData) => ev.stopPropagation());
   root.add(dim);
-
   const panel = scene.add.graphics();
   panel.fillStyle(0x18243c, 0.98);
-  panel.fillRoundedRect(14, 70, GAME_WIDTH - 28, GAME_HEIGHT - 160, 10);
+  panel.fillRoundedRect(12, 66, GAME_WIDTH - 24, GAME_HEIGHT - 148, 10);
   panel.lineStyle(2, 0x4a6aaa, 1);
-  panel.strokeRoundedRect(14, 70, GAME_WIDTH - 28, GAME_HEIGHT - 160, 10);
+  panel.strokeRoundedRect(12, 66, GAME_WIDTH - 24, GAME_HEIGHT - 148, 10);
   root.add(panel);
-
-  root.add(scene.add.text(GAME_WIDTH / 2, 86, title, {
-    fontSize: '14px', color: '#ffffff', fontFamily: 'monospace', fontStyle: 'bold',
+  root.add(scene.add.text(GAME_WIDTH / 2, 82, title, {
+    fontSize: '13px', color: '#ffffff', fontFamily: 'monospace', fontStyle: 'bold',
+    align: 'center', wordWrap: { width: GAME_WIDTH - 90 },
   }).setOrigin(0.5, 0));
-
   const close = () => { root.destroy(); onClose?.(); };
-  const xBtn = makeButton(scene, GAME_WIDTH - 38, 94, 30, 26, 'X', close, { color: 0x883333 });
-  root.add(xBtn);
-
+  root.add(makeButton(scene, GAME_WIDTH - 36, 90, 30, 26, 'X', close, { color: 0x883333 }));
   return { root, close };
+}
+
+export function confirmDialog(scene: Phaser.Scene, title: string, message: string, yesLabel: string, onYes: () => void): void {
+  const { root, close } = modal(scene, title);
+  root.add(scene.add.text(GAME_WIDTH / 2, 150, message, {
+    fontSize: '10px', color: '#ffe8e0', fontFamily: 'monospace', align: 'center', lineSpacing: 3,
+    wordWrap: { width: GAME_WIDTH - 70 },
+  }).setOrigin(0.5, 0));
+  root.add(makeButton(scene, GAME_WIDTH / 2 - 70, 420, 116, 38, yesLabel, () => { close(); onYes(); }, { color: 0x8a3333 }));
+  root.add(makeButton(scene, GAME_WIDTH / 2 + 70, 420, 116, 38, 'not yet', close, { color: 0x334455 }));
 }

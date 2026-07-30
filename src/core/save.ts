@@ -1,80 +1,101 @@
-// Game state + persistence.
-// PROTOTYPE NOTE: localStorage stands in for the server-authoritative save
-// the design doc requires. The shape is kept flat/serializable so it can be
-// lifted onto a backend without redesign.
+// Game state + persistence for v2.2.
+// PROTOTYPE: localStorage stands in for the server-authoritative backend.
 
-import { OFFLINE_CAP_HOURS } from '../config/constants';
+import { OFFLINE_CAP_HOURS, STAR_JP_GATES } from '../config/constants';
+import { JobKey } from '../game/jobs';
 
-export type HeroClass = 'Knight' | 'Archer' | 'Mage' | 'Rogue' | 'Cleric';
+export interface JobProgress {
+  level: number;              // 1..30, 1 JP per level [LOCKED]
+  xp: number;
+  jpSpent: string[];          // tree node ids bought (permanent per job)
+  jpUnspent: number;
+}
 
 export interface Hero {
   id: string;
   name: string;
-  cls: HeroClass;
-  level: number;
-  xp: number;
+  job: JobKey;                          // currently worn job
+  charLevel: number;
+  charXp: number;
   statPoints: number;
-  alloc: { hp: number; atk: number; def: number; spd: number };
-  recruit: { label: string; date: string; lat: number; lon: number };
-  dedicated: { buildingId: string; date: string } | null;
+  alloc: { str: number; dex: number; int: number };
+  luck: number;                         // innate, non-allocatable
+  jobs: Partial<Record<JobKey, JobProgress>>;
+  equippedUlt: number;                  // 0..3 index into job's ultimates
+  recruit: { label: string; date: string };
+  dedicated: { buildingId: string; date: string; jpAtDedication: number } | null;
+  villager: boolean;                    // reversible [LOCKED]
 }
 
 export interface Building {
-  id: string;
-  type: string;   // townhall | tavern | knightschool | archery | magetower | shrine | storage | house
+  id: string;                // unique instance id
+  type: string;              // building type key
   name: string;
-  gx: number;
-  gy: number;
-  w: number;
-  h: number;
+  gx: number; gy: number; w: number; h: number;
   stars: number;
-  ledger: string[]; // hero ids in dedication order
+  ledger: string[];          // hero ids, dedication order
 }
 
-export interface TavernOffer {
-  name: string;
-  cls: HeroClass;
-  level: number;
-  cost: number;
+export interface Deco {
+  kind: 'path' | 'tree' | 'shrub';
+  gx: number;
+  gy: number;
 }
+
+export interface TavernCandidate {
+  name: string;
+  job: JobKey;
+  charLevel: number;
+  luck: number;
+  taken: boolean;
+}
+
+// Onboarding steps (doc s.2 session-one shape)
+export type OnboardStep =
+  | 'chest'        // a chest at your feet
+  | 'freeHero'     // one free hero, with a name
+  | 'firstBattle'  // first battle + "this is your street" callout
+  | 'townhall'     // kingdom unlocked, place the Town Hall
+  | 'introDungeon' // the seeded intro dungeon
+  | 'done';
 
 export interface GameState {
   version: number;
   gold: number;
   wood: number;
   stone: number;
+  crystal: number;            // dungeon-only material
   heroes: Hero[];
   buildings: Building[];
-  tavern: { day: string; offers: TavernOffer[] };
-  // world interaction flags: key -> dayKey when consumed
+  decos: Deco[];
+  tavern: { rolledAt: number; candidates: TavernCandidate[] };
   consumed: Record<string, string>;
+  harvestedCells: Record<string, string>;  // walk-regen clamp: cell -> dayKey
+  epicCheckpoint: Record<string, number>;  // dungeonKey -> floor reached
   lastSeen: number;
   admin: { enabled: boolean; pos: { lat: number; lon: number } | null };
-  introSeen: boolean;
+  onboard: OnboardStep;
 }
 
-const KEY = 'ke2_save';
+const KEY = 'ke3_save';
 
 function defaultState(): GameState {
   return {
-    version: 1,
-    gold: 300,
-    wood: 120,
-    stone: 80,
+    version: 3,
+    gold: 120,
+    wood: 60,
+    stone: 40,
+    crystal: 0,
     heroes: [],
-    buildings: [
-      { id: 'townhall', type: 'townhall', name: 'Town Hall', gx: 7, gy: 1, w: 3, h: 3, stars: 0, ledger: [] },
-      { id: 'tavern', type: 'tavern', name: 'The Waypoint Tavern', gx: 1, gy: 2, w: 3, h: 2, stars: 0, ledger: [] },
-      { id: 'knightschool', type: 'knightschool', name: 'Knight School', gx: 1, gy: 8, w: 3, h: 2, stars: 0, ledger: [] },
-      { id: 'storage', type: 'storage', name: 'Storehouse', gx: 8, gy: 8, w: 2, h: 2, stars: 0, ledger: [] },
-      { id: 'house1', type: 'house', name: 'Cottage', gx: 2, gy: 13, w: 2, h: 2, stars: 0, ledger: [] },
-      { id: 'house2', type: 'house', name: 'Cottage', gx: 8, gy: 13, w: 2, h: 2, stars: 0, ledger: [] },
-    ],
-    tavern: { day: '', offers: [] },
+    buildings: [],  // kingdom starts EMPTY — Town Hall is placed in onboarding
+    decos: [],
+    tavern: { rolledAt: 0, candidates: [] },
     consumed: {},
+    harvestedCells: {},
+    epicCheckpoint: {},
     lastSeen: Date.now(),
     admin: { enabled: false, pos: null },
-    introSeen: false,
+    onboard: 'chest',
   };
 }
 
@@ -86,9 +107,9 @@ class Store {
       const raw = localStorage.getItem(KEY);
       if (raw) {
         const s = JSON.parse(raw);
-        if (s?.version === 1) this.state = { ...defaultState(), ...s };
+        if (s?.version === 3) this.state = { ...defaultState(), ...s };
       }
-    } catch { /* fresh start */ }
+    } catch { /* fresh */ }
   }
 
   save(): void {
@@ -98,35 +119,74 @@ class Store {
     } catch { /* non-fatal */ }
   }
 
+  reset(): void {
+    this.state = defaultState();
+    this.save();
+  }
+
   // ---- derived ----
-  kingdomLevel(): number {
-    const stars = this.state.buildings.reduce((a, b) => a + b.stars, 0);
-    return 1 + Math.floor(stars / 2);
-  }
-
-  livingHeroes(): Hero[] {
-    return this.state.heroes.filter((h) => !h.dedicated);
-  }
-
   hero(id: string): Hero | undefined {
     return this.state.heroes.find((h) => h.id === id);
   }
 
-  building(id: string): Building | undefined {
-    return this.state.buildings.find((b) => b.id === id);
+  building(idOrType: string): Building | undefined {
+    return this.state.buildings.find((b) => b.id === idOrType || b.type === idOrType);
   }
 
-  // Offline villager production: MATERIALS ONLY, hard-capped (design doc s.7)
-  collectOffline(): { wood: number; stone: number } {
-    const houses = this.state.buildings.filter((b) => b.type === 'house').length;
-    const storageStars = this.building('storage')?.stars ?? 0;
-    const capHours = OFFLINE_CAP_HOURS + storageStars * 2;
-    const hours = Math.min((Date.now() - this.state.lastSeen) / 3600000, capHours);
-    const wood = Math.floor(hours * 6 * houses);
-    const stone = Math.floor(hours * 4 * houses);
+  hasBuilding(type: string): boolean {
+    return this.state.buildings.some((b) => b.type === type);
+  }
+
+  activeHeroes(): Hero[] {
+    return this.state.heroes.filter((h) => !h.dedicated && !h.villager);
+  }
+
+  villagers(): Hero[] {
+    return this.state.heroes.filter((h) => h.villager);
+  }
+
+  kingdomLevel(): number {
+    const stars = this.state.buildings.reduce((a, b) => a + b.stars, 0);
+    return 1 + Math.floor(stars / 2) + Math.floor(this.state.buildings.length / 4);
+  }
+
+  avgCharLevel(): number {
+    const hs = this.activeHeroes();
+    if (!hs.length) return 1;
+    return Math.max(1, Math.round(hs.reduce((a, h) => a + h.charLevel, 0) / hs.length));
+  }
+
+  // Total JP EARNED by a hero across all jobs (1 per job level past 1).
+  // This is "the only honest record of a hero's life" — gates dedication.
+  totalJpEarned(h: Hero): number {
+    return Object.values(h.jobs).reduce((a, j) => a + (j ? j.level - 1 : 0), 0);
+  }
+
+  maxStarReachable(h: Hero): number {
+    const jp = this.totalJpEarned(h);
+    let s = 0;
+    for (let i = 0; i < STAR_JP_GATES.length; i++) {
+      if (jp >= STAR_JP_GATES[i]) s = i + 1;
+    }
+    return s;
+  }
+
+  dedicationUnlocked(): boolean {
+    return this.state.heroes.some((h) => this.totalJpEarned(h) >= 8);
+  }
+
+  // Offline production: flat per body (doc 14.4), capped [LOCKED]
+  collectOffline(): { wood: number; stone: number; gold: number } {
+    const bodies = this.villagers().length + this.state.buildings.filter((b) => b.type === 'house').length;
+    const farms = this.state.buildings.filter((b) => b.type === 'farm').length;
+    const hours = Math.min((Date.now() - this.state.lastSeen) / 3600000, OFFLINE_CAP_HOURS);
+    const wood = Math.floor(hours * 5 * bodies);
+    const stone = Math.floor(hours * 3 * bodies);
+    const gold = Math.floor(hours * 2 * farms);
     this.state.wood += wood;
     this.state.stone += stone;
-    return { wood, stone };
+    this.state.gold += gold;
+    return { wood, stone, gold };
   }
 }
 
