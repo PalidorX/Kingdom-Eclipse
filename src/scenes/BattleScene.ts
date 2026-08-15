@@ -107,6 +107,7 @@ export class BattleScene extends Phaser.Scene {
     cell('clean_mountain', 5, 0);
     cell('t_town_blue', 6, 0);
     cell('t_town_red', 7, 0);
+    cell('clean_park', 1, 14);
     Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
   }
 
@@ -200,6 +201,7 @@ export class BattleScene extends Phaser.Scene {
           t === 'sand' ? 'clean_sand' :
           t === 'mountain' ? 'clean_mountain' :
           t === 'town' ? townFrame(this.launch.terrain, regions, x, y) :
+          t === 'park' ? 'clean_park' :
           't_grass'; // forest floors render grass; the trees are obstacle decos
         this.groundRT.drawFrame('world-tileset', frame, x * TILE, y * TILE);
       }

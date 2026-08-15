@@ -15,7 +15,8 @@ export interface OSMFeature {
   geometry: { lat: number; lon: number }[];
 }
 
-const CACHE_KEY = 'ke2_osm_cache';
+const CACHE_KEY = 'ke3_osm_areas';
+const CACHE_SLOTS = 12;
 const POI_TAGS = ['amenity', 'shop', 'leisure', 'tourism', 'historic'];
 
 interface RawElement {
@@ -69,35 +70,53 @@ export async function fetchOSM(center: GeoPos): Promise<{ elements: RawElement[]
   return res.json();
 }
 
-export function loadCache(): { pos: GeoPos; data: { elements: RawElement[] } } | null {
+interface CachedArea { pos: GeoPos; data: { elements: RawElement[] }; ts: number }
+
+function loadAreas(): CachedArea[] {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const c = JSON.parse(raw);
-    if (typeof c?.pos?.lat === 'number' && c?.data) return c;
+    if (raw) {
+      const a = JSON.parse(raw);
+      if (Array.isArray(a)) return a;
+    }
   } catch { /* ignore */ }
-  return null;
+  return [];
 }
 
-export function saveCache(pos: GeoPos, data: { elements: RawElement[] }): void {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ pos, data }));
-  } catch { /* storage full - non-fatal */ }
+function saveAreas(areas: CachedArea[]): void {
+  // trim oldest first; shrink further if storage is full
+  let list = [...areas].sort((a, b) => b.ts - a.ts).slice(0, CACHE_SLOTS);
+  for (;;) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(list));
+      return;
+    } catch {
+      if (list.length <= 1) return;
+      list = list.slice(0, Math.floor(list.length / 2));
+    }
+  }
 }
 
-// Get map data for a position: cache within 60m -> cached; else network;
-// on failure -> null (caller synthesizes procedural terrain).
+// Get map data for a position: any cached area within 60m wins; else fetch
+// (and cache); on failure fall back to the nearest cached area within 400m,
+// else null (caller synthesizes procedural terrain).
 export async function getMapData(pos: GeoPos): Promise<{ features: OSMFeature[]; pinned: GeoPos } | null> {
-  const c = loadCache();
-  if (c && haversineM(c.pos, pos) < 60) {
-    return { features: parseOSM(c.data), pinned: c.pos };
+  const areas = loadAreas();
+  const near = areas
+    .map((a) => ({ a, d: haversineM(a.pos, pos) }))
+    .sort((x, y) => x.d - y.d)[0];
+  if (near && near.d < 60) {
+    near.a.ts = Date.now();
+    saveAreas(areas);
+    return { features: parseOSM(near.a.data), pinned: near.a.pos };
   }
   try {
     const data = await fetchOSM(pos);
-    saveCache(pos, data);
+    areas.push({ pos, data, ts: Date.now() });
+    saveAreas(areas);
     return { features: parseOSM(data), pinned: pos };
   } catch {
-    if (c) return { features: parseOSM(c.data), pinned: c.pos };
+    if (near && near.d < 400) return { features: parseOSM(near.a.data), pinned: near.a.pos };
     return null;
   }
 }

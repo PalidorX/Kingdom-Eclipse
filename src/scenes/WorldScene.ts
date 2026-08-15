@@ -20,11 +20,11 @@ const PRIORITY: Record<Terrain, number> = {
   grass: 0, park: 1, forest: 2, sand: 3, path: 4, town: 5, water: 6, mountain: 7,
 };
 const AUTOTILE_BLOCKS: Record<string, [number, number]> = {
-  water: [0, 1], forest: [4, 1], mountain: [0, 5], road: [4, 5], sand: [0, 9],
+  water: [0, 1], forest: [4, 1], mountain: [0, 5], road: [4, 5], sand: [0, 9], park: [4, 9],
 };
 const TERRAIN_BLOCK: Record<Terrain, string | null> = {
   water: 'water', forest: 'forest', mountain: 'mountain', path: 'road', sand: 'sand',
-  grass: null, park: null, town: null,
+  park: 'park', grass: null, town: null,
 };
 
 interface Marker {
@@ -43,6 +43,8 @@ export class WorldScene extends Phaser.Scene {
   private townRegions: number[][] = [];
   private features: OSMFeature[] = [];
   private pinned: GeoPos = { lat: 0, lon: 0 };
+  private viewCenter: GeoPos | null = null; // where the camera looks (panning decouples it from the player)
+  private rebuilding = false;
   private worldRoot!: Phaser.GameObjects.Container;
   private mapLayer!: Phaser.GameObjects.Container;
   private markerLayer!: Phaser.GameObjects.Container;
@@ -84,6 +86,8 @@ export class WorldScene extends Phaser.Scene {
 
     this.setupPanning();
     makeButton(this, 44, GAME_HEIGHT - 84, 64, 30, '⌖ center', () => {
+      this.viewCenter = null;
+      this.reloadWorld();
       this.tweens.add({ targets: this.worldRoot, x: 0, y: 0, duration: 280, ease: 'Cubic.easeOut' });
     }, { color: 0x1c2c4c }).setDepth(UI_DEPTH);
 
@@ -298,6 +302,7 @@ export class WorldScene extends Phaser.Scene {
     cell('t_grass', 0, 0);
     const clean: Record<string, number> = { water: 1, forest: 2, road: 3, sand: 4, mountain: 5 };
     Object.entries(clean).forEach(([k, c]) => cell(`clean_${k}`, c, 0));
+    cell('clean_park', 1, 14);
     cell('t_town_blue', 6, 0);
     cell('t_town_red', 7, 0);
     Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
@@ -683,8 +688,9 @@ export class WorldScene extends Phaser.Scene {
   private onPositionChanged(): void {
     if (!this.scene.isActive()) return;
     this.updatePlayer();
-    // spawns regenerate as the player walks (new area = new seed cell)
-    if (haversineM(geo.pos, this.pinned) > 80) this.reloadWorld();
+    // spawns regenerate as the player walks (new area = new seed cell).
+    // While the camera is panned away (viewCenter set), don't yank it back.
+    if (this.viewCenter === null && haversineM(geo.pos, this.pinned) > 80) this.reloadWorld();
   }
 
   // ---------------- panning ----------------
@@ -706,13 +712,46 @@ export class WorldScene extends Phaser.Scene {
       if (!this.panning || !p.isDown) return;
       const dx = p.x - this.panSX, dy = p.y - this.panSY;
       if (Math.abs(dx) + Math.abs(dy) > 10) this.panMoved = true;
-      this.worldRoot.x = Phaser.Math.Clamp(this.panOX + dx, -this.maxPanX, this.maxPanX);
-      this.worldRoot.y = Phaser.Math.Clamp(this.panOY + dy, -this.maxPanY, this.maxPanY);
+      // endless scroll: no clamp — the world re-centres when you let go
+      this.worldRoot.x = this.panOX + dx;
+      this.worldRoot.y = this.panOY + dy;
     });
     this.input.on('pointerup', () => {
       this.panning = false;
       this.time.delayedCall(50, () => { this.panMoved = false; });
+      this.maybeRecenterView();
     });
+  }
+
+  // When panned far from the map centre, rebuild the world around the point
+  // under the screen centre — endless scrolling in every direction.
+  private async maybeRecenterView(): Promise<void> {
+    if (this.rebuilding) return;
+    const off = Math.hypot(this.worldRoot.x, this.worldRoot.y);
+    if (off < Math.min(this.maxPanX, this.maxPanY) * 0.6) return;
+    this.rebuilding = true;
+    const wx = GAME_WIDTH / 2 - this.worldRoot.x - this.mapLayer.x;
+    const wy = GAME_HEIGHT / 2 - this.worldRoot.y - this.mapLayer.y;
+    const center = this.tileToLatLon(wx / TILE, wy / TILE);
+    this.viewCenter = center;
+    const data = await getMapData(center);
+    this.markers.forEach((m) => m.obj.destroy());
+    this.markers = [];
+    if (data) {
+      this.features = data.features;
+      this.pinned = data.pinned;
+      this.genTerrainFromOSM();
+    } else {
+      this.features = [];
+      this.pinned = center;
+      this.genProceduralTerrain();
+    }
+    this.townRegions = computeTownRegions(this.terrain);
+    this.renderTerrain();
+    this.respawnMarkers();
+    this.updatePlayer();
+    this.worldRoot.setPosition(0, 0);
+    this.rebuilding = false;
   }
 
   // ---------------- admin ----------------
