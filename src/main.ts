@@ -1,9 +1,20 @@
 import Phaser from 'phaser';
 import { GAME_WIDTH, GAME_HEIGHT } from './config/constants';
+import { ZOOM } from './core/zoom';
 import { BootScene } from './scenes/BootScene';
 import { WorldScene } from './scenes/WorldScene';
 import { KingdomScene } from './scenes/KingdomScene';
 import { BattleScene } from './scenes/BattleScene';
+
+// Render all text at device resolution so it stays sharp under camera zoom
+const origText = Phaser.GameObjects.GameObjectFactory.prototype.text;
+(Phaser.GameObjects.GameObjectFactory.prototype as any).text = function (
+  x: number, y: number, t: string | string[], style?: Phaser.Types.GameObjects.Text.TextStyle
+) {
+  const st = { ...(style ?? {}) } as Phaser.Types.GameObjects.Text.TextStyle & { resolution?: number };
+  if (st.resolution === undefined) st.resolution = ZOOM;
+  return origText.call(this, x, y, t, st);
+};
 
 window.addEventListener('load', () => {
   const game = new Phaser.Game({
@@ -13,8 +24,8 @@ window.addEventListener('load', () => {
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
-      width: GAME_WIDTH,
-      height: GAME_HEIGHT,
+      width: GAME_WIDTH * ZOOM,
+      height: GAME_HEIGHT * ZOOM,
       autoRound: true,
     },
     render: {

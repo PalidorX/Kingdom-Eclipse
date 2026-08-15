@@ -4,6 +4,7 @@
 // tiered floors with permadeath-within-run and an epic halfway checkpoint.
 
 import Phaser from 'phaser';
+import { ZOOM } from '../core/zoom';
 import {
   GAME_WIDTH, GAME_HEIGHT, TILE, BATTLE_COLS, BATTLE_ROWS, DEPLOY_CAP,
   EPIC_CHECKPOINT_FLOOR, DungeonTier,
@@ -14,7 +15,6 @@ import { JOBS, ULTIMATES, UltimateDef } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { makeButton, toast, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey } from '../core/rng';
-import { TOWN_FRAMES, computeTownRegions, townFrame } from '../game/towntiles';
 
 interface Launch {
   mode: 'monster' | 'boss' | 'dungeon';
@@ -90,6 +90,8 @@ export class BattleScene extends Phaser.Scene {
 
   create(): void {
     bakeAllSprites(this);
+    this.cameras.main.setZoom(ZOOM);
+    this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     this.defineTiles();
     this.buildFloor();
   }
@@ -105,10 +107,7 @@ export class BattleScene extends Phaser.Scene {
     cell('clean_road', 3, 0);
     cell('clean_sand', 4, 0);
     cell('clean_mountain', 5, 0);
-    cell('t_town_blue', 6, 0);
-    cell('t_town_red', 7, 0);
     cell('clean_park', 1, 14);
-    Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
   }
 
   // ---------------- floor construction ----------------
@@ -149,7 +148,7 @@ export class BattleScene extends Phaser.Scene {
         const t = this.launch.terrain[y]?.[x] ?? 'grass';
         let cell: Cell = { walkable: true };
         if (t === 'water') cell = { walkable: false };
-        else if (t === 'town' || t === 'mountain') cell = { walkable: false, deco: 'wall' };
+        else if (t === 'mountain') cell = { walkable: false, deco: 'wall' };
         else if (t === 'forest' && r() < 0.5) cell = { walkable: false, deco: 'tree' };
         else if ((t === 'grass' || t === 'park') && r() < 0.07) cell = { walkable: false, deco: 'tree' };
         this.grid[y][x] = cell;
@@ -191,7 +190,6 @@ export class BattleScene extends Phaser.Scene {
 
   private renderGround(): void {
     this.groundRT = this.add.renderTexture(GRID_X, GRID_Y, BATTLE_COLS * TILE, BATTLE_ROWS * TILE).setOrigin(0, 0);
-    const regions = computeTownRegions(this.launch.terrain);
     for (let y = 0; y < BATTLE_ROWS; y++) {
       for (let x = 0; x < BATTLE_COLS; x++) {
         const t = this.launch.terrain[y]?.[x] ?? 'grass';
@@ -200,7 +198,6 @@ export class BattleScene extends Phaser.Scene {
           t === 'path' ? 'clean_road' :
           t === 'sand' ? 'clean_sand' :
           t === 'mountain' ? 'clean_mountain' :
-          t === 'town' ? townFrame(this.launch.terrain, regions, x, y) :
           t === 'park' ? 'clean_park' :
           't_grass'; // forest floors render grass; the trees are obstacle decos
         this.groundRT.drawFrame('world-tileset', frame, x * TILE, y * TILE);
@@ -370,8 +367,8 @@ export class BattleScene extends Phaser.Scene {
       const home = { x: bx, y: benchY + 6 };
       c.on('drag', (_p: Phaser.Input.Pointer, dx: number, dy: number) => { c.x = dx; c.y = dy; });
       c.on('dragend', (p: Phaser.Input.Pointer) => {
-        const gx = Math.floor((p.x - GRID_X) / TILE);
-        const gy = Math.floor((p.y - GRID_Y) / TILE);
+        const gx = Math.floor((p.worldX - GRID_X) / TILE);
+        const gy = Math.floor((p.worldY - GRID_Y) / TILE);
         if (this.tryPlace(h, gx, gy)) c.destroy();
         else c.setPosition(home.x, home.y);
       });

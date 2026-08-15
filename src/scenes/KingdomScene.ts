@@ -3,6 +3,7 @@
 // (JP-gated, permanent) raises stars; the Wall of Honor remembers everyone.
 
 import Phaser from 'phaser';
+import { ZOOM } from '../core/zoom';
 import {
   GAME_WIDTH, GAME_HEIGHT, TILE, MAX_STARS, STAR_JP_GATES,
   TAVERN_SLOTS, TAVERN_COOLDOWN_MS, TAVERN_REROLL_COST, SUBCLASS_JP_REQ,
@@ -37,6 +38,8 @@ export class KingdomScene extends Phaser.Scene {
 
   create(): void {
     bakeAllSprites(this);
+    this.cameras.main.setZoom(ZOOM);
+    this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     this.defineTiles();
     this.renderGround();
     this.decoLayer = this.add.container(0, 0);
@@ -56,9 +59,9 @@ export class KingdomScene extends Phaser.Scene {
     makeButton(this, 322, GAME_HEIGHT - 84, 74, 28, 'LANDSCAPE', () => this.openLandscapeMenu(), { color: 0x3a6a5a, fontSize: '9px' }).setDepth(UI_DEPTH);
 
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.y < OY || p.y > OY + KROWS * TILE) return;
-      const gx = Math.floor((p.x - OX) / TILE);
-      const gy = Math.floor((p.y - OY) / TILE);
+      if (p.worldY < OY || p.worldY > OY + KROWS * TILE) return;
+      const gx = Math.floor((p.worldX - OX) / TILE);
+      const gy = Math.floor((p.worldY - OY) / TILE);
       if (gx < 0 || gy < 0 || gx >= KCOLS || gy >= KROWS) return;
       if (this.mode === 'build' && this.pendingBuild) this.tryPlaceBuilding(this.pendingBuild, gx, gy);
       else if (this.mode === 'landscape' && this.pendingDeco) this.placeDeco(gx, gy);

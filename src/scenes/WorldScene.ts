@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { ZOOM } from '../core/zoom';
 import {
   GAME_WIDTH, GAME_HEIGHT, TILE, WORLD_TX, WORLD_TY, METERS_PER_TILE,
   INTERACT_RADIUS_M, BATTLE_COLS, BATTLE_ROWS, DENSITY_MIN,
@@ -12,7 +13,6 @@ import { JOBS, JobKey, ALL_JOBS, BASE_JOBS } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey, cellKey } from '../core/rng';
-import { TOWN_FRAMES, computeTownRegions, townFrame } from '../game/towntiles';
 
 type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
 
@@ -40,7 +40,6 @@ interface Marker {
 
 export class WorldScene extends Phaser.Scene {
   private terrain: Terrain[][] = [];
-  private townRegions: number[][] = [];
   private features: OSMFeature[] = [];
   private pinned: GeoPos = { lat: 0, lon: 0 };
   private viewCenter: GeoPos | null = null; // where the camera looks (panning decouples it from the player)
@@ -63,6 +62,8 @@ export class WorldScene extends Phaser.Scene {
 
   create(): void {
     bakeAllSprites(this);
+    this.cameras.main.setZoom(ZOOM);
+    this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     this.defineTilesetFrames();
 
     const baseX = (GAME_WIDTH - WORLD_TX * TILE) / 2;
@@ -204,7 +205,6 @@ export class WorldScene extends Phaser.Scene {
       this.pinned = { ...geo.pos };
       this.genProceduralTerrain();
     }
-    this.townRegions = computeTownRegions(this.terrain);
     this.renderTerrain();
     this.respawnMarkers();
     this.updatePlayer();
@@ -241,8 +241,10 @@ export class WorldScene extends Phaser.Scene {
       this.terrain[y] = [];
       for (let x = 0; x < WORLD_TX; x++) this.terrain[y][x] = 'grass';
     }
+    // Lore: nobody lives on the surface — the kingdoms float. Building
+    // footprints blend back into the land instead of rendering as towns.
     const map: Record<string, Terrain> = {
-      building: 'town', road: 'path', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
+      building: 'grass', road: 'path', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
     };
     for (const f of this.features) {
       const terr = map[f.type];
@@ -303,9 +305,12 @@ export class WorldScene extends Phaser.Scene {
     const clean: Record<string, number> = { water: 1, forest: 2, road: 3, sand: 4, mountain: 5 };
     Object.entries(clean).forEach(([k, c]) => cell(`clean_${k}`, c, 0));
     cell('clean_park', 1, 14);
-    cell('t_town_blue', 6, 0);
-    cell('t_town_red', 7, 0);
-    Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
+    cell('obj_chest', 0, 13);
+    cell('obj_cave1', 1, 13);
+    cell('obj_cave2', 2, 13);
+    cell('obj_volcano', 3, 13);
+    cell('obj_tree', 4, 13);
+    cell('obj_chest_rare', 5, 13);
     Object.entries(AUTOTILE_BLOCKS).forEach(([k, [bc, br]]) => {
       for (let m = 0; m < 16; m++) cell(`at_${k}_${m}`, bc + (m & 3), br + (m >> 2));
     });
@@ -318,9 +323,7 @@ export class WorldScene extends Phaser.Scene {
 
   private frameFor(x: number, y: number): string {
     const terr = this.terrain[y][x];
-    if (terr === 'town') {
-      return townFrame(this.terrain, this.townRegions, x, y);
-    }
+    if (terr === 'town') return 't_grass'; // legacy: towns no longer exist on the surface
     const key = TERRAIN_BLOCK[terr];
     if (!key) return 't_grass';
     const same = (nx: number, ny: number) => {
@@ -497,16 +500,21 @@ export class WorldScene extends Phaser.Scene {
     const px = tx * TILE + TILE / 2;
     const py = ty * TILE + TILE / 2;
     const c = this.add.container(px, py);
+    const m: Marker = { key, kind, tx, ty, level, label, tier, job, obj: c };
+    const tilesetFrame =
+      kind === 'chest' ? 'obj_chest' :
+      kind === 'rarechest' ? 'obj_chest_rare' :
+      kind === 'dungeon' ? (m.tier === 'epic' ? 'obj_volcano' : m.tier === 'medium' ? 'obj_cave2' : 'obj_cave1') :
+      null;
     const sprKey =
-      kind === 'chest' ? 'spr_chest' :
-      kind === 'rarechest' ? 'spr_chest_rare' :
       kind === 'wood' ? 'spr_node_wood' :
       kind === 'stone' ? 'spr_node_stone' :
-      kind === 'dungeon' ? 'spr_dungeon' :
       kind === 'boss' ? 'spr_boss' :
       kind === 'hero' ? `spr_job_${job ?? 'Knight'}` :
       MONSTER_SPRITES[hashStr(key) % MONSTER_SPRITES.length];
-    const img = this.add.image(0, 0, sprKey).setOrigin(0.5, kind === 'hero' ? 0.85 : 0.8);
+    const img = tilesetFrame
+      ? this.add.image(0, 6, 'world-tileset', tilesetFrame).setOrigin(0.5, 0.8)
+      : this.add.image(0, 0, sprKey).setOrigin(0.5, kind === 'hero' ? 0.85 : 0.8);
     c.add(img);
     if (kind === 'monster' || kind === 'boss' || kind === 'dungeon') {
       const tierTxt = tier ? ` ${DUNGEON_TIERS[tier].label}` : '';
@@ -520,7 +528,6 @@ export class WorldScene extends Phaser.Scene {
       this.tweens.add({ targets: lt, y: lt.y - 5, yoyo: true, repeat: -1, duration: 500 });
     }
     const hit = this.add.rectangle(0, -10, 40, 44, 0, 0).setInteractive();
-    const m: Marker = { key, kind, tx, ty, level, label, tier, job, obj: c };
     hit.on('pointerdown', () => { if (!this.panMoved) this.tapMarker(m); });
     c.add(hit);
     this.markerLayer.add(c);
@@ -689,8 +696,11 @@ export class WorldScene extends Phaser.Scene {
     if (!this.scene.isActive()) return;
     this.updatePlayer();
     // spawns regenerate as the player walks (new area = new seed cell).
-    // While the camera is panned away (viewCenter set), don't yank it back.
-    if (this.viewCenter === null && haversineM(geo.pos, this.pinned) > 80) this.reloadWorld();
+    // Never rebuild around the player while the view is panned away — GPS
+    // jitter was yanking the camera home.
+    const panned = this.viewCenter !== null ||
+      Math.abs(this.worldRoot.x) > 40 || Math.abs(this.worldRoot.y) > 40;
+    if (!panned && haversineM(geo.pos, this.pinned) > 80) this.reloadWorld();
   }
 
   // ---------------- panning ----------------
@@ -698,11 +708,11 @@ export class WorldScene extends Phaser.Scene {
   private setupPanning(): void {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       this.panning = true; this.panMoved = false;
-      this.panSX = p.x; this.panSY = p.y;
+      this.panSX = p.worldX; this.panSY = p.worldY;
       this.panOX = this.worldRoot.x; this.panOY = this.worldRoot.y;
-      if (this.teleportTapMode && p.y > 60 && p.y < GAME_HEIGHT - 60) {
-        const wx = p.x - this.worldRoot.x - this.mapLayer.x;
-        const wy = p.y - this.worldRoot.y - this.mapLayer.y;
+      if (this.teleportTapMode && p.worldY > 60 && p.worldY < GAME_HEIGHT - 60) {
+        const wx = p.worldX - this.worldRoot.x - this.mapLayer.x;
+        const wy = p.worldY - this.worldRoot.y - this.mapLayer.y;
         const pos = this.tileToLatLon(wx / TILE, wy / TILE);
         this.teleportTapMode = false;
         this.adminTeleport(pos);
@@ -710,7 +720,7 @@ export class WorldScene extends Phaser.Scene {
     });
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!this.panning || !p.isDown) return;
-      const dx = p.x - this.panSX, dy = p.y - this.panSY;
+      const dx = p.worldX - this.panSX, dy = p.worldY - this.panSY;
       if (Math.abs(dx) + Math.abs(dy) > 10) this.panMoved = true;
       // endless scroll: no clamp — the world re-centres when you let go
       this.worldRoot.x = this.panOX + dx;
@@ -763,7 +773,6 @@ export class WorldScene extends Phaser.Scene {
       this.pinned = center;
       this.genProceduralTerrain();
     }
-    this.townRegions = computeTownRegions(this.terrain);
     this.renderTerrain();
     this.respawnMarkers();
     this.updatePlayer();

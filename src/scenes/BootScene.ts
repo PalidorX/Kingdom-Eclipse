@@ -2,6 +2,7 @@
 // the player's real neighbourhood as fast as the data allows (doc s.2).
 
 import Phaser from 'phaser';
+import { ZOOM } from '../core/zoom';
 import { GAME_WIDTH, GAME_HEIGHT } from '../config/constants';
 import { geo } from '../core/geo';
 import { getMapData } from '../core/osm';
@@ -16,6 +17,8 @@ export class BootScene extends Phaser.Scene {
   }
 
   async create(): Promise<void> {
+    this.cameras.main.setZoom(ZOOM);
+    this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     store.load();
     const offline = store.collectOffline();
 
