@@ -15,6 +15,12 @@ window.addEventListener('load', () => {
       autoCenter: Phaser.Scale.CENTER_BOTH,
       width: GAME_WIDTH,
       height: GAME_HEIGHT,
+      autoRound: true,
+    },
+    render: {
+      pixelArt: true,
+      antialias: false,
+      roundPixels: true,
     },
     input: { activePointers: 2 },
     scene: [BootScene, WorldScene, KingdomScene, BattleScene],
