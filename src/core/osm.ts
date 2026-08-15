@@ -116,7 +116,9 @@ export async function getMapData(pos: GeoPos): Promise<{ features: OSMFeature[];
     saveAreas(areas);
     return { features: parseOSM(data), pinned: pos };
   } catch {
-    if (near && near.d < 400) return { features: parseOSM(near.a.data), pinned: near.a.pos };
+    // only fall back to a cached area that actually covers this view;
+    // otherwise let the caller synthesize terrain at the requested centre
+    if (near && near.d < 60) return { features: parseOSM(near.a.data), pinned: near.a.pos };
     return null;
   }
 }

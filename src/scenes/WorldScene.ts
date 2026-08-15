@@ -716,25 +716,42 @@ export class WorldScene extends Phaser.Scene {
       this.worldRoot.x = this.panOX + dx;
       this.worldRoot.y = this.panOY + dy;
     });
-    this.input.on('pointerup', () => {
-      this.panning = false;
-      this.time.delayedCall(50, () => { this.panMoved = false; });
-      this.maybeRecenterView();
-    });
+    this.input.on('pointerup', () => this.settlePan());
+    this.input.on('pointerupoutside', () => this.settlePan());
   }
 
-  // When panned far from the map centre, rebuild the world around the point
-  // under the screen centre — endless scrolling in every direction.
+  private settlePan(): void {
+    if (!this.panning) return;
+    this.panning = false;
+    this.time.delayedCall(50, () => { this.panMoved = false; });
+    this.maybeRecenterView();
+  }
+
+  // Phaser can miss pointerup after a drag; poll the pointer as a backstop
+  update(): void {
+    if (this.panning && !this.input.activePointer.isDown) this.settlePan();
+  }
+
+  // When panned toward the map edge, rebuild the world around the point
+  // under the screen centre — WITHOUT moving what the player sees. The spot
+  // under the screen centre stays put; only the data around it refreshes.
   private async maybeRecenterView(): Promise<void> {
     if (this.rebuilding) return;
-    const off = Math.hypot(this.worldRoot.x, this.worldRoot.y);
-    if (off < Math.min(this.maxPanX, this.maxPanY) * 0.6) return;
+    const off = Math.max(Math.abs(this.worldRoot.x), Math.abs(this.worldRoot.y));
+    if (off < Math.min(this.maxPanX, this.maxPanY) * 0.5) return;
     this.rebuilding = true;
     const wx = GAME_WIDTH / 2 - this.worldRoot.x - this.mapLayer.x;
     const wy = GAME_HEIGHT / 2 - this.worldRoot.y - this.mapLayer.y;
     const center = this.tileToLatLon(wx / TILE, wy / TILE);
     this.viewCenter = center;
     const data = await getMapData(center);
+    const newPinned = data ? data.pinned : center;
+    // same map as before (cache hit on the current pin): nothing to rebuild —
+    // the enlarged margin still covers the view, so just leave the pan alone
+    if (newPinned.lat === this.pinned.lat && newPinned.lon === this.pinned.lon) {
+      this.rebuilding = false;
+      return;
+    }
     this.markers.forEach((m) => m.obj.destroy());
     this.markers = [];
     if (data) {
@@ -750,7 +767,12 @@ export class WorldScene extends Phaser.Scene {
     this.renderTerrain();
     this.respawnMarkers();
     this.updatePlayer();
-    this.worldRoot.setPosition(0, 0);
+    // keep the geo point that was under the screen centre EXACTLY there
+    const t = this.latLonToTileF(center.lat, center.lon);
+    this.worldRoot.setPosition(
+      GAME_WIDTH / 2 - (t.x * TILE + this.mapLayer.x),
+      GAME_HEIGHT / 2 - (t.y * TILE + this.mapLayer.y)
+    );
     this.rebuilding = false;
   }
 

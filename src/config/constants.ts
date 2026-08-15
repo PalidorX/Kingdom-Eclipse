@@ -5,7 +5,7 @@ export const TILE = 32;
 // World map: viewport tiles + pan margin
 export const VIEW_TX = Math.ceil(GAME_WIDTH / TILE);   // 12
 export const VIEW_TY = Math.ceil(GAME_HEIGHT / TILE);  // 21
-export const PAN_MARGIN = 8;
+export const PAN_MARGIN = 14;
 export const WORLD_TX = VIEW_TX + PAN_MARGIN * 2;
 export const WORLD_TY = VIEW_TY + PAN_MARGIN * 2;
 export const METERS_PER_TILE = 5;
