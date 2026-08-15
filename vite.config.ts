@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  define: {
+    __BUILD_TS__: JSON.stringify(Date.now().toString(36)),
+  },
   base: '/Kingdom-Eclipse/',
   build: {
     outDir: 'dist',

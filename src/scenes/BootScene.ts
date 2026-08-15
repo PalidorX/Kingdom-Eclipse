@@ -11,7 +11,8 @@ export class BootScene extends Phaser.Scene {
   constructor() { super({ key: 'BootScene' }); }
 
   preload(): void {
-    this.load.image('world-tileset', `${import.meta.env.BASE_URL}assets/world-tileset.png`);
+    // __BUILD_TS__ busts stale image caches on each deploy
+    this.load.image('world-tileset', `${import.meta.env.BASE_URL}assets/world-tileset.png?v=${__BUILD_TS__}`);
   }
 
   async create(): Promise<void> {
