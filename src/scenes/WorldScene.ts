@@ -12,6 +12,7 @@ import { JOBS, JobKey, ALL_JOBS, BASE_JOBS } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey, cellKey } from '../core/rng';
+import { TOWN_FRAMES, computeTownRegions, townFrame } from '../game/towntiles';
 
 type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
 
@@ -39,6 +40,7 @@ interface Marker {
 
 export class WorldScene extends Phaser.Scene {
   private terrain: Terrain[][] = [];
+  private townRegions: number[][] = [];
   private features: OSMFeature[] = [];
   private pinned: GeoPos = { lat: 0, lon: 0 };
   private worldRoot!: Phaser.GameObjects.Container;
@@ -198,6 +200,7 @@ export class WorldScene extends Phaser.Scene {
       this.pinned = { ...geo.pos };
       this.genProceduralTerrain();
     }
+    this.townRegions = computeTownRegions(this.terrain);
     this.renderTerrain();
     this.respawnMarkers();
     this.updatePlayer();
@@ -297,6 +300,7 @@ export class WorldScene extends Phaser.Scene {
     Object.entries(clean).forEach(([k, c]) => cell(`clean_${k}`, c, 0));
     cell('t_town_blue', 6, 0);
     cell('t_town_red', 7, 0);
+    Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
     Object.entries(AUTOTILE_BLOCKS).forEach(([k, [bc, br]]) => {
       for (let m = 0; m < 16; m++) cell(`at_${k}_${m}`, bc + (m & 3), br + (m >> 2));
     });
@@ -310,8 +314,7 @@ export class WorldScene extends Phaser.Scene {
   private frameFor(x: number, y: number): string {
     const terr = this.terrain[y][x];
     if (terr === 'town') {
-      const v = this.noise(Math.floor(x / 2) * 2.3 + 1, Math.floor(y / 2) * 2.3 + 1);
-      return v > 0.5 ? 't_town_blue' : 't_town_red';
+      return townFrame(this.terrain, this.townRegions, x, y);
     }
     const key = TERRAIN_BLOCK[terr];
     if (!key) return 't_grass';

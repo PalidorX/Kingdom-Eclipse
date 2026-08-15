@@ -14,6 +14,7 @@ import { JOBS, ULTIMATES, UltimateDef } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { makeButton, toast, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey } from '../core/rng';
+import { TOWN_FRAMES, computeTownRegions, townFrame } from '../game/towntiles';
 
 interface Launch {
   mode: 'monster' | 'boss' | 'dungeon';
@@ -106,6 +107,7 @@ export class BattleScene extends Phaser.Scene {
     cell('clean_mountain', 5, 0);
     cell('t_town_blue', 6, 0);
     cell('t_town_red', 7, 0);
+    Object.entries(TOWN_FRAMES).forEach(([k, [c, r]]) => cell(k, c, r));
   }
 
   // ---------------- floor construction ----------------
@@ -188,6 +190,7 @@ export class BattleScene extends Phaser.Scene {
 
   private renderGround(): void {
     this.groundRT = this.add.renderTexture(GRID_X, GRID_Y, BATTLE_COLS * TILE, BATTLE_ROWS * TILE).setOrigin(0, 0);
+    const regions = computeTownRegions(this.launch.terrain);
     for (let y = 0; y < BATTLE_ROWS; y++) {
       for (let x = 0; x < BATTLE_COLS; x++) {
         const t = this.launch.terrain[y]?.[x] ?? 'grass';
@@ -196,7 +199,7 @@ export class BattleScene extends Phaser.Scene {
           t === 'path' ? 'clean_road' :
           t === 'sand' ? 'clean_sand' :
           t === 'mountain' ? 'clean_mountain' :
-          t === 'town' ? (hashStr(`${x},${y}`) % 2 ? 't_town_blue' : 't_town_red') :
+          t === 'town' ? townFrame(this.launch.terrain, regions, x, y) :
           't_grass'; // forest floors render grass; the trees are obstacle decos
         this.groundRT.drawFrame('world-tileset', frame, x * TILE, y * TILE);
       }
