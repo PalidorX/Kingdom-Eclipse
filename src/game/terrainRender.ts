@@ -9,7 +9,7 @@ import Phaser from 'phaser';
 export const BLOCK_POS: Record<string, [number, number]> = {
   water: [0, 1], forest: [2, 1], mountain: [4, 1], road: [6, 1],
   paved: [0, 4], sand: [2, 4], park: [4, 4], res: [6, 4],
-  com: [0, 7], ind: [2, 7], civ: [4, 7],
+  com: [0, 7], ind: [2, 7], civ: [4, 7], island: [6, 7],
 };
 
 // Terrain names used by the scenes -> block key (null renders plain grass)
@@ -72,9 +72,10 @@ export function drawTerrainTile(
   y: number,
   px: number,
   py: number,
-  sameAt: (x: number, y: number) => boolean
+  sameAt: (x: number, y: number) => boolean,
+  underlay = true
 ): void {
-  rt.drawFrame('world-tileset', 't_grass', px, py);
+  if (underlay) rt.drawFrame('world-tileset', 't_grass', px, py);
   if (!block) return;
 
   // neighbour signs per quadrant: TL checks west/north/northwest, etc.

@@ -18,12 +18,13 @@ import { BUILDING_TYPES, buildable, lockedSubclassBuildings } from '../game/buil
 import { bakeAllSprites } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, confirmDialog, UI_DEPTH } from '../game/ui';
 import { hashStr } from '../core/rng';
-import { registerTerrainFrames } from '../game/terrainRender';
+import { registerTerrainFrames, drawTerrainTile } from '../game/terrainRender';
+import { mulberry32 } from '../core/rng';
 
-const KCOLS = 11;
-const KROWS = 16;
-const OX = (GAME_WIDTH - KCOLS * TILE) / 2;
-const OY = 64;
+const KCOLS = 24;
+const KROWS = 20;
+const OX = 0;
+const OY = 0;
 
 export class KingdomScene extends Phaser.Scene {
   private refreshHud: () => void = () => {};
@@ -34,6 +35,12 @@ export class KingdomScene extends Phaser.Scene {
   private buildingLayer!: Phaser.GameObjects.Container;
   private decoLayer!: Phaser.GameObjects.Container;
   private hintText: Phaser.GameObjects.Text | null = null;
+  // the kingdom is a floating island you pan around
+  private kroot!: Phaser.GameObjects.Container;
+  private island: boolean[][] = [];
+  private panning = false;
+  private panMoved = false;
+  private panSX = 0; private panSY = 0; private panOX = 0; private panOY = 0;
 
   constructor() { super({ key: 'KingdomScene' }); }
 
@@ -42,12 +49,21 @@ export class KingdomScene extends Phaser.Scene {
     this.cameras.main.setZoom(ZOOM);
     this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
     this.defineTiles();
+    this.genIsland();
+    this.drawSky();
+    // everything on the island lives in kroot and pans together
+    this.kroot = this.add.container(
+      Math.round((GAME_WIDTH - KCOLS * TILE) / 2),
+      Math.round((GAME_HEIGHT - KROWS * TILE) / 2)
+    );
     this.renderGround();
     this.decoLayer = this.add.container(0, 0);
     this.buildingLayer = this.add.container(0, 0);
+    this.kroot.add([this.decoLayer, this.buildingLayer]);
     this.renderDecos();
     this.renderBuildings();
     this.spawnAmbient();
+    this.setupPanning();
 
     const h = hud(this, 'YOUR KINGDOM');
     this.refreshHud = h.refresh;
@@ -59,10 +75,10 @@ export class KingdomScene extends Phaser.Scene {
     makeButton(this, 250, GAME_HEIGHT - 84, 62, 28, 'BUILD', () => this.openBuildMenu(), { color: 0x2a6a3a, fontSize: '10px' }).setDepth(UI_DEPTH);
     makeButton(this, 322, GAME_HEIGHT - 84, 74, 28, 'LANDSCAPE', () => this.openLandscapeMenu(), { color: 0x3a6a5a, fontSize: '9px' }).setDepth(UI_DEPTH);
 
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      if (p.worldY < OY || p.worldY > OY + KROWS * TILE) return;
-      const gx = Math.floor((p.worldX - OX) / TILE);
-      const gy = Math.floor((p.worldY - OY) / TILE);
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (this.panMoved) return;
+      const gx = Math.floor((p.worldX - this.kroot.x - OX) / TILE);
+      const gy = Math.floor((p.worldY - this.kroot.y - OY) / TILE);
       if (gx < 0 || gy < 0 || gx >= KCOLS || gy >= KROWS) return;
       if (this.mode === 'build' && this.pendingBuild) this.tryPlaceBuilding(this.pendingBuild, gx, gy);
       else if (this.mode === 'landscape' && this.pendingDeco) this.placeDeco(gx, gy);
@@ -90,16 +106,87 @@ export class KingdomScene extends Phaser.Scene {
     registerTerrainFrames(this);
   }
 
-  private renderGround(): void {
-    this.groundRT = this.add.renderTexture(OX, OY, KCOLS * TILE, KROWS * TILE).setOrigin(0, 0);
+  // A stable, gently irregular floating island silhouette
+  private genIsland(): void {
+    const r = mulberry32(1337);
+    const cx = KCOLS / 2 - 0.5, cy = KROWS / 2 - 0.5;
+    const wob: number[] = [];
+    for (let i = 0; i < 16; i++) wob.push(0.82 + r() * 0.3);
+    this.island = [];
     for (let y = 0; y < KROWS; y++) {
+      this.island[y] = [];
       for (let x = 0; x < KCOLS; x++) {
-        this.groundRT.drawFrame('world-tileset', 't_grass', x * TILE, y * TILE);
+        const dx = (x - cx) / (KCOLS / 2), dy = (y - cy) / (KROWS / 2);
+        const ang = Math.atan2(dy, dx);
+        const seg = ((Math.floor(((ang + Math.PI) / (2 * Math.PI)) * 16) % 16) + 16) % 16;
+        this.island[y][x] = Math.hypot(dx, dy) < wob[seg];
       }
     }
+  }
+
+  private insideIsland(gx: number, gy: number): boolean {
+    return gy >= 0 && gx >= 0 && gy < KROWS && gx < KCOLS && this.island[gy][gx];
+  }
+
+  private drawSky(): void {
     const g = this.add.graphics();
-    g.lineStyle(3, 0x2a3a5a, 1);
-    g.strokeRect(OX - 2, OY - 2, KCOLS * TILE + 4, KROWS * TILE + 4);
+    g.fillGradientStyle(0x16213c, 0x16213c, 0x0e1420, 0x0e1420, 1);
+    g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    // drifting clouds far below the island
+    const r = mulberry32(777);
+    for (let i = 0; i < 7; i++) {
+      const cl = this.add.graphics();
+      cl.fillStyle(0xaabbdd, 0.10 + r() * 0.08);
+      const w = 60 + r() * 90;
+      cl.fillEllipse(0, 0, w, w * 0.32);
+      cl.fillEllipse(w * 0.3, 4, w * 0.6, w * 0.22);
+      cl.setPosition(r() * GAME_WIDTH, 80 + r() * (GAME_HEIGHT - 160));
+      this.tweens.add({
+        targets: cl, x: cl.x + 40 + r() * 60,
+        duration: 14000 + r() * 12000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+    }
+  }
+
+  private renderGround(): void {
+    this.groundRT = this.add.renderTexture(OX, OY, KCOLS * TILE, KROWS * TILE).setOrigin(0, 0);
+    // island shadow cast into the sky below
+    const sh = this.add.graphics();
+    sh.fillStyle(0x000000, 0.25);
+    sh.fillEllipse(OX + (KCOLS * TILE) / 2, OY + KROWS * TILE + 14, KCOLS * TILE * 0.7, 40);
+    this.kroot.add(sh);
+    for (let y = 0; y < KROWS; y++) {
+      for (let x = 0; x < KCOLS; x++) {
+        if (!this.island[y][x]) continue;
+        drawTerrainTile(this.groundRT, 'island', x, y, x * TILE, y * TILE,
+          (nx, ny) => this.insideIsland(nx, ny), false);
+      }
+    }
+    this.kroot.add(this.groundRT);
+  }
+
+  private setupPanning(): void {
+    const minX = Math.min(GAME_WIDTH - (KCOLS * TILE) - 40, 0);
+    const minY = Math.min(GAME_HEIGHT - (KROWS * TILE) - 80, 20);
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      this.panning = true; this.panMoved = false;
+      this.panSX = p.worldX; this.panSY = p.worldY;
+      this.panOX = this.kroot.x; this.panOY = this.kroot.y;
+    });
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (!this.panning || !p.isDown) return;
+      const dx = p.worldX - this.panSX, dy = p.worldY - this.panSY;
+      if (Math.abs(dx) + Math.abs(dy) > 10) this.panMoved = true;
+      this.kroot.x = Phaser.Math.Clamp(this.panOX + dx, minX, 40);
+      this.kroot.y = Phaser.Math.Clamp(this.panOY + dy, minY, 80);
+    });
+  }
+
+  update(): void {
+    if (this.panning && !this.input.activePointer.isDown) {
+      this.panning = false;
+      this.time.delayedCall(60, () => { this.panMoved = false; });
+    }
   }
 
   private renderDecos(): void {
@@ -170,7 +257,8 @@ export class KingdomScene extends Phaser.Scene {
     for (let i = 0; i < count; i++) {
       const hero = vills[i - 2];
       const key = hero ? `spr_job_${hero.job}` : 'spr_villager';
-      const c = this.add.container(OX + 30 + ((i * 90) % (KCOLS * TILE - 60)), OY + 80 + ((i * 130) % (KROWS * TILE - 140)));
+      const c = this.add.container(OX + 120 + ((i * 90) % (KCOLS * TILE - 240)), OY + 120 + ((i * 130) % (KROWS * TILE - 240)));
+      this.kroot.add(c);
       c.add(this.add.image(0, 0, key).setOrigin(0.5, 0.9).setScale(0.6));
       if (hero) {
         c.add(this.add.text(0, -44, `${hero.name}\n(villager)`, {
@@ -228,6 +316,7 @@ export class KingdomScene extends Phaser.Scene {
     const bt = BUILDING_TYPES[type];
     if (gx + bt.w > KCOLS || gy + bt.h > KROWS) { toast(this, 'Out of bounds', '#e8a860'); return; }
     for (let dy = 0; dy < bt.h; dy++) for (let dx = 0; dx < bt.w; dx++) {
+      if (!this.insideIsland(gx + dx, gy + dy)) { toast(this, 'That is open sky — build on the island', '#e8a860'); return; }
       if (this.occupied(gx + dx, gy + dy)) { toast(this, 'Blocked — pick open ground', '#e8a860'); return; }
     }
     if (store.state.wood < bt.cost.wood || store.state.stone < bt.cost.stone || store.state.gold < bt.cost.gold) {
@@ -293,6 +382,7 @@ export class KingdomScene extends Phaser.Scene {
       this.renderDecos();
       return;
     }
+    if (!this.insideIsland(gx, gy)) { toast(this, 'That is open sky', '#e8a860'); return; }
     if (this.occupied(gx, gy)) { toast(this, 'A building stands there', '#e8a860'); return; }
     if (store.state.decos.some((d) => d.gx === gx && d.gy === gy)) return;
     const costs = { path: { wood: 0, stone: 2 }, tree: { wood: 4, stone: 0 }, shrub: { wood: 2, stone: 0 } };
