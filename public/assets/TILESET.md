@@ -25,6 +25,10 @@ Row 11: objects — crate · cave (short) · cavern (medium) · volcano (epic)
   Félix) A3 roof+wall autotiles, village doors/windows, and the INN sign,
   upscaled 2x to the 32px grid. Frames in src/game/buildingArt.ts.
 - smoke.png (96x64): 3-frame chimney smoke from the same pack.
+- ui.png (512x391): menu chrome — panels, buttons, bars, icons — chopped
+  from a purchased fantasy menu kit supplied by the project owner. The
+  raw kit sheet is NOT stored in this repo; only these composed crops
+  ship. Frames + 9-slice insets are generated into src/game/uiArt.ts.
 - kingdom-objects.png / crystal.png / clouds.png: kingdom decor, the
   animated Kingdom Crystal, and pixel clouds, same source packs.
 

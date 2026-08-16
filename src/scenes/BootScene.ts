@@ -19,6 +19,7 @@ export class BootScene extends Phaser.Scene {
     this.load.image('kobjects', `${import.meta.env.BASE_URL}assets/kingdom-objects.png?v=${__BUILD_TS__}`);
     this.load.image('buildings', `${import.meta.env.BASE_URL}assets/buildings.png?v=${__BUILD_TS__}`);
     this.load.spritesheet('smoke', `${import.meta.env.BASE_URL}assets/smoke.png?v=${__BUILD_TS__}`, { frameWidth: 32, frameHeight: 64 });
+    this.load.image('ui', `${import.meta.env.BASE_URL}assets/ui.png?v=${__BUILD_TS__}`);
   }
 
   async create(): Promise<void> {

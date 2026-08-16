@@ -13,7 +13,7 @@ import { store, Hero } from '../core/save';
 import { effStats, grantWinXp } from '../game/heroes';
 import { JOBS, ULTIMATES, UltimateDef } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
-import { makeButton, toast, UI_DEPTH } from '../game/ui';
+import { makeButton, toast, uiPanel, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey } from '../core/rng';
 import { registerTerrainFrames, drawTerrainTile, TERRAIN_TO_BLOCK } from '../game/terrainRender';
 
@@ -343,9 +343,7 @@ export class BattleScene extends Phaser.Scene {
   private renderBench(): void {
     const alive = store.activeHeroes().filter((h) => this.runRoster.has(h.id));
     const benchY = GAME_HEIGHT - 56;
-    const bg = this.add.graphics().setDepth(UI_DEPTH - 1);
-    bg.fillStyle(0x101828, 0.96);
-    bg.fillRect(0, benchY - 44, GAME_WIDTH, 100);
+    uiPanel(this, GAME_WIDTH / 2, benchY + 8, GAME_WIDTH + 16, 110, 'panel').setDepth(UI_DEPTH - 1);
     this.add.text(8, benchY - 40, `deploy up to ${DEPLOY_CAP} · drag to the blue zone`, {
       fontSize: '9px', color: '#8899bb', fontFamily: 'monospace',
     }).setDepth(UI_DEPTH);
