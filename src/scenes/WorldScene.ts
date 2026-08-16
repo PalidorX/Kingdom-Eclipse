@@ -13,22 +13,14 @@ import { JOBS, JobKey, ALL_JOBS, BASE_JOBS } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey, cellKey } from '../core/rng';
+import { registerTerrainFrames, drawTerrainTile, TERRAIN_TO_BLOCK } from '../game/terrainRender';
 
-type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park' | 'res' | 'com' | 'ind' | 'civ';
+type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'paved' | 'mountain' | 'town' | 'sand' | 'park' | 'res' | 'com' | 'ind' | 'civ';
 
 const PRIORITY: Record<Terrain, number> = {
-  grass: 0, park: 1, forest: 2, sand: 3, path: 4,
-  town: 5, res: 5, com: 5, ind: 5, civ: 5,
-  water: 6, mountain: 7,
-};
-const AUTOTILE_BLOCKS: Record<string, [number, number]> = {
-  water: [0, 1], forest: [4, 1], mountain: [0, 5], road: [4, 5], sand: [0, 9], park: [4, 9],
-  res: [0, 15], com: [4, 15], ind: [0, 19], civ: [4, 19],
-};
-const TERRAIN_BLOCK: Record<Terrain, string | null> = {
-  water: 'water', forest: 'forest', mountain: 'mountain', path: 'road', sand: 'sand',
-  park: 'park', res: 'res', com: 'com', ind: 'ind', civ: 'civ',
-  grass: null, town: null,
+  grass: 0, park: 1, forest: 2, sand: 3, path: 4, paved: 5,
+  town: 6, res: 6, com: 6, ind: 6, civ: 6,
+  water: 7, mountain: 8,
 };
 
 interface Marker {
@@ -249,7 +241,7 @@ export class WorldScene extends Phaser.Scene {
     // districts they once were, each its own overgrown-ruin terrain.
     const map: Record<string, Terrain> = {
       res: 'res', com: 'com', ind: 'ind', civ: 'civ',
-      road: 'path', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
+      road: 'path', paved: 'paved', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
     };
     for (const f of this.features) {
       const terr = map[f.type];
@@ -302,58 +294,29 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private defineTilesetFrames(): void {
-    const tex = this.textures.get('world-tileset');
-    const cell = (name: string, c: number, r: number) => {
-      if (!tex.has(name)) tex.add(name, 0, c * 32, r * 32, 32, 32);
-    };
-    cell('t_grass', 0, 0);
-    const clean: Record<string, number> = { water: 1, forest: 2, road: 3, sand: 4, mountain: 5 };
-    Object.entries(clean).forEach(([k, c]) => cell(`clean_${k}`, c, 0));
-    cell('clean_park', 1, 14);
-    cell('clean_res', 2, 14);
-    cell('clean_com', 3, 14);
-    cell('clean_ind', 4, 14);
-    cell('clean_civ', 5, 14);
-    cell('obj_chest', 0, 13);
-    cell('obj_cave1', 1, 13);
-    cell('obj_cave2', 2, 13);
-    cell('obj_volcano', 3, 13);
-    cell('obj_tree', 4, 13);
-    cell('obj_chest_rare', 5, 13);
-    Object.entries(AUTOTILE_BLOCKS).forEach(([k, [bc, br]]) => {
-      for (let m = 0; m < 16; m++) cell(`at_${k}_${m}`, bc + (m & 3), br + (m >> 2));
-    });
+    registerTerrainFrames(this);
   }
 
-  private noise(x: number, y: number): number {
-    const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
-    return n - Math.floor(n);
-  }
-
-  private frameFor(x: number, y: number): string {
-    const terr = this.terrain[y][x];
-    if (terr === 'town') return 't_grass'; // legacy: towns no longer exist on the surface
-    const key = TERRAIN_BLOCK[terr];
-    if (!key) return 't_grass';
-    const same = (nx: number, ny: number) => {
-      if (nx < 0 || ny < 0 || nx >= WORLD_TX || ny >= WORLD_TY) return true;
-      return TERRAIN_BLOCK[this.terrain[ny][nx]] === key;
-    };
-    const n = same(x, y - 1), s = same(x, y + 1), e = same(x + 1, y), w = same(x - 1, y);
-    let m = 0;
-    if (n && w) m |= 1;
-    if (n && e) m |= 2;
-    if (s && e) m |= 4;
-    if (s && w) m |= 8;
-    return m === 15 ? `clean_${key}` : `at_${key}_${m}`;
-  }
 
   private renderTerrain(): void {
     this.mapLayer.removeAll(true);
     const rt = this.add.renderTexture(0, 0, WORLD_TX * TILE, WORLD_TY * TILE).setOrigin(0, 0);
+    const blockOf = (x: number, y: number): string | null => {
+      if (x < 0 || y < 0 || x >= WORLD_TX || y >= WORLD_TY) return 'edge';
+      return TERRAIN_TO_BLOCK[this.terrain[y][x]] ?? null;
+    };
     for (let y = 0; y < WORLD_TY; y++) {
       for (let x = 0; x < WORLD_TX; x++) {
-        rt.drawFrame('world-tileset', this.frameFor(x, y), x * TILE, y * TILE);
+        const b = TERRAIN_TO_BLOCK[this.terrain[y][x]] ?? null;
+        drawTerrainTile(rt, b, x, y, x * TILE, y * TILE, (nx, ny) => {
+          const nb = blockOf(nx, ny);
+          return nb === 'edge' ? true : nb === b;
+        });
+        // ruins read as blocked ground: scatter rubble on district tiles
+        if (b === 'res' || b === 'com' || b === 'ind' || b === 'civ') {
+          const n = hashStr(`rub|${x}|${y}`) % 100;
+          if (n < 30) rt.drawFrame('world-tileset', 'obj_rubble', x * TILE, y * TILE);
+        }
       }
     }
     this.mapLayer.add(rt);

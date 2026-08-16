@@ -15,6 +15,7 @@ import { JOBS, ULTIMATES, UltimateDef } from '../game/jobs';
 import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { makeButton, toast, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey } from '../core/rng';
+import { registerTerrainFrames, drawTerrainTile, TERRAIN_TO_BLOCK } from '../game/terrainRender';
 
 interface Launch {
   mode: 'monster' | 'boss' | 'dungeon';
@@ -97,21 +98,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private defineTiles(): void {
-    const tex = this.textures.get('world-tileset');
-    const cell = (name: string, c: number, r: number) => {
-      if (!tex.has(name)) tex.add(name, 0, c * 32, r * 32, 32, 32);
-    };
-    cell('t_grass', 0, 0);
-    cell('clean_water', 1, 0);
-    cell('clean_forest', 2, 0);
-    cell('clean_road', 3, 0);
-    cell('clean_sand', 4, 0);
-    cell('clean_mountain', 5, 0);
-    cell('clean_park', 1, 14);
-    cell('clean_res', 2, 14);
-    cell('clean_com', 3, 14);
-    cell('clean_ind', 4, 14);
-    cell('clean_civ', 5, 14);
+    registerTerrainFrames(this);
   }
 
   // ---------------- floor construction ----------------
@@ -154,6 +141,7 @@ export class BattleScene extends Phaser.Scene {
         if (t === 'water') cell = { walkable: false };
         else if (t === 'mountain') cell = { walkable: false, deco: 'wall' };
         else if (t === 'forest' && r() < 0.5) cell = { walkable: false, deco: 'tree' };
+        else if (t === 'paved') cell = { walkable: true }; // streets are open lanes
         else if ((t === 'grass' || t === 'park') && r() < 0.07) cell = { walkable: false, deco: 'tree' };
         else if (['res', 'com', 'ind', 'civ'].includes(t) && r() < 0.12) cell = { walkable: false, deco: 'rock' }; // ruin rubble as cover
         this.grid[y][x] = cell;
@@ -195,21 +183,20 @@ export class BattleScene extends Phaser.Scene {
 
   private renderGround(): void {
     this.groundRT = this.add.renderTexture(GRID_X, GRID_Y, BATTLE_COLS * TILE, BATTLE_ROWS * TILE).setOrigin(0, 0);
+    const blockOf = (x: number, y: number): string | null => {
+      if (x < 0 || y < 0 || x >= BATTLE_COLS || y >= BATTLE_ROWS) return 'edge';
+      const t = this.launch.terrain[y]?.[x] ?? 'grass';
+      // forest floors render grass (trees are obstacle decos on top)
+      if (t === 'forest') return null;
+      return TERRAIN_TO_BLOCK[t] ?? null;
+    };
     for (let y = 0; y < BATTLE_ROWS; y++) {
       for (let x = 0; x < BATTLE_COLS; x++) {
-        const t = this.launch.terrain[y]?.[x] ?? 'grass';
-        const frame =
-          t === 'water' ? 'clean_water' :
-          t === 'path' ? 'clean_road' :
-          t === 'sand' ? 'clean_sand' :
-          t === 'mountain' ? 'clean_mountain' :
-          t === 'park' ? 'clean_park' :
-          t === 'res' ? 'clean_res' :
-          t === 'com' ? 'clean_com' :
-          t === 'ind' ? 'clean_ind' :
-          t === 'civ' ? 'clean_civ' :
-          't_grass'; // forest floors render grass; the trees are obstacle decos
-        this.groundRT.drawFrame('world-tileset', frame, x * TILE, y * TILE);
+        const b = blockOf(x, y);
+        drawTerrainTile(this.groundRT, b === 'edge' ? null : b, x, y, x * TILE, y * TILE, (nx, ny) => {
+          const nb = blockOf(nx, ny);
+          return nb === 'edge' ? true : nb === b;
+        });
       }
     }
     const g = this.add.graphics().setDepth(2);

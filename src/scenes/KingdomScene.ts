@@ -18,6 +18,7 @@ import { BUILDING_TYPES, buildable, lockedSubclassBuildings } from '../game/buil
 import { bakeAllSprites } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, confirmDialog, UI_DEPTH } from '../game/ui';
 import { hashStr } from '../core/rng';
+import { registerTerrainFrames } from '../game/terrainRender';
 
 const KCOLS = 11;
 const KROWS = 16;
@@ -86,12 +87,7 @@ export class KingdomScene extends Phaser.Scene {
   }
 
   private defineTiles(): void {
-    const tex = this.textures.get('world-tileset');
-    const cell = (name: string, c: number, r: number) => {
-      if (!tex.has(name)) tex.add(name, 0, c * 32, r * 32, 32, 32);
-    };
-    cell('t_grass', 0, 0);
-    cell('clean_road', 3, 0);
+    registerTerrainFrames(this);
   }
 
   private renderGround(): void {

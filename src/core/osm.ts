@@ -5,7 +5,7 @@
 import { GeoPos, haversineM } from './geo';
 import { METERS_PER_TILE, WORLD_TX, WORLD_TY } from '../config/constants';
 
-export type FeatureType = 'res' | 'com' | 'ind' | 'civ' | 'road' | 'water' | 'forest' | 'park' | 'parking';
+export type FeatureType = 'res' | 'com' | 'ind' | 'civ' | 'road' | 'paved' | 'water' | 'forest' | 'park' | 'parking';
 
 export interface OSMFeature {
   type: FeatureType;
@@ -25,6 +25,12 @@ interface RawElement {
   tags?: Record<string, string>;
   geometry?: { lat: number; lon: number }[];
 }
+
+// OSM highway values that are real streets; everything else (footway, path,
+// track, cycleway, steps...) renders as the olive trail
+const PAVED_HW = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified',
+  'residential', 'service', 'living_street', 'motorway_link', 'trunk_link', 'primary_link',
+  'secondary_link', 'tertiary_link']);
 
 const RES_TAGS = new Set(['house', 'residential', 'apartments', 'detached', 'terrace', 'semidetached_house', 'bungalow', 'dormitory', 'hut', 'static_caravan']);
 const IND_TAGS = new Set(['industrial', 'warehouse', 'factory', 'garage', 'garages', 'shed', 'hangar', 'barn', 'silo']);
@@ -51,7 +57,7 @@ export function parseOSM(data: { elements: RawElement[] }): OSMFeature[] {
     const t = el.tags || {};
     let type: FeatureType | null = null;
     if (t.building) type = classifyBuilding(t);
-    else if (t.highway) type = 'road';
+    else if (t.highway) type = PAVED_HW.has(t.highway) ? 'paved' : 'road';
     else if (t.natural === 'water' || t.waterway) type = 'water';
     else if (t.landuse === 'forest' || t.natural === 'wood') type = 'forest';
     else if (t.leisure === 'park' || t.landuse === 'grass') type = 'park';
