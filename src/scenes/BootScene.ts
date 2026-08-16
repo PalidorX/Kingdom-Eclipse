@@ -14,6 +14,9 @@ export class BootScene extends Phaser.Scene {
   preload(): void {
     // __BUILD_TS__ busts stale image caches on each deploy
     this.load.image('world-tileset', `${import.meta.env.BASE_URL}assets/world-tileset.png?v=${__BUILD_TS__}`);
+    this.load.spritesheet('crystal', `${import.meta.env.BASE_URL}assets/crystal.png?v=${__BUILD_TS__}`, { frameWidth: 32, frameHeight: 48 });
+    this.load.image('clouds', `${import.meta.env.BASE_URL}assets/clouds.png?v=${__BUILD_TS__}`);
+    this.load.image('kobjects', `${import.meta.env.BASE_URL}assets/kingdom-objects.png?v=${__BUILD_TS__}`);
   }
 
   async create(): Promise<void> {

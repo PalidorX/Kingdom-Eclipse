@@ -104,6 +104,27 @@ export class KingdomScene extends Phaser.Scene {
 
   private defineTiles(): void {
     registerTerrainFrames(this);
+    const ko = this.textures.get('kobjects');
+    const add = (n: string, x: number, y: number, w: number, h: number) => { if (!ko.has(n)) ko.add(n, 0, x, y, w, h); };
+    add('ko_tree', 0, 0, 64, 64);
+    add('ko_tree_pine', 64, 0, 64, 64);
+    add('ko_bush', 0, 64, 32, 32);
+    add('ko_bush2', 32, 64, 32, 32);
+    add('ko_barrel', 64, 64, 32, 32);
+    add('ko_crate', 96, 64, 32, 32);
+    const cl = this.textures.get('clouds');
+    const cadd = (n: string, x: number, y: number, w: number, h: number) => { if (!cl.has(n)) cl.add(n, 0, x, y, w, h); };
+    cadd('cloud_l', 0, 0, 120, 44);
+    cadd('cloud_m', 0, 46, 80, 32);
+    cadd('cloud_s', 0, 80, 48, 22);
+    if (!this.anims.exists('crystal_glow')) {
+      this.anims.create({
+        key: 'crystal_glow',
+        frames: this.anims.generateFrameNumbers('crystal', { start: 0, end: 3 }),
+        frameRate: 5,
+        repeat: -1,
+      });
+    }
   }
 
   // A stable, gently irregular floating island silhouette
@@ -132,18 +153,20 @@ export class KingdomScene extends Phaser.Scene {
     const g = this.add.graphics();
     g.fillGradientStyle(0x16213c, 0x16213c, 0x0e1420, 0x0e1420, 1);
     g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    // drifting clouds far below the island
+    // pixel-art clouds drifting far below the island: nearer ones bigger and
+    // brighter, distant ones small and faint
     const r = mulberry32(777);
-    for (let i = 0; i < 7; i++) {
-      const cl = this.add.graphics();
-      cl.fillStyle(0xaabbdd, 0.10 + r() * 0.08);
-      const w = 60 + r() * 90;
-      cl.fillEllipse(0, 0, w, w * 0.32);
-      cl.fillEllipse(w * 0.3, 4, w * 0.6, w * 0.22);
-      cl.setPosition(r() * GAME_WIDTH, 80 + r() * (GAME_HEIGHT - 160));
+    const frames = ['cloud_l', 'cloud_m', 'cloud_s'];
+    for (let i = 0; i < 12; i++) {
+      const fi = Math.floor(r() * 3);
+      const cl = this.add.image(r() * GAME_WIDTH, 70 + r() * (GAME_HEIGHT - 140), 'clouds', frames[fi]);
+      const depthScale = [1.4, 1.0, 0.7][fi];
+      cl.setScale(depthScale * (0.8 + r() * 0.7));
+      cl.setAlpha(0.12 + r() * (fi === 0 ? 0.45 : 0.25));
+      const dist = 30 + r() * 90;
       this.tweens.add({
-        targets: cl, x: cl.x + 40 + r() * 60,
-        duration: 14000 + r() * 12000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        targets: cl, x: cl.x + (r() < 0.5 ? dist : -dist),
+        duration: 12000 + r() * 20000, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
       });
     }
   }
@@ -163,6 +186,26 @@ export class KingdomScene extends Phaser.Scene {
       }
     }
     this.kroot.add(this.groundRT);
+
+    // THE KINGDOM CRYSTAL — the shard that keeps the island aloft, at the
+    // exact centre, glowing forever
+    const ccx = (KCOLS * TILE) / 2;
+    const ccy = (KROWS * TILE) / 2;
+    const crystal = this.add.sprite(ccx, ccy + 8, 'crystal');
+    crystal.setOrigin(0.5, 1);
+    crystal.play('crystal_glow');
+    crystal.setDepth(5);
+    this.kroot.add(crystal);
+    this.tweens.add({
+      targets: crystal, scaleX: 1.04, scaleY: 1.04,
+      duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
+  }
+
+  // the crystal's ground is sacred — no building on the centre tiles
+  private isCrystalTile(gx: number, gy: number): boolean {
+    const cx = KCOLS / 2, cy = KROWS / 2;
+    return gx >= cx - 1 && gx <= cx && gy >= cy - 1 && gy <= cy;
   }
 
   private setupPanning(): void {
@@ -197,9 +240,9 @@ export class KingdomScene extends Phaser.Scene {
         const img = this.add.image(px, py, 'world-tileset', 'clean_road').setOrigin(0, 0);
         this.decoLayer.add(img);
       } else if (d.kind === 'tree') {
-        this.decoLayer.add(this.add.image(px + 16, py + 28, 'spr_tree').setOrigin(0.5, 1));
+        this.decoLayer.add(this.add.image(px + 16, py + 30, 'kobjects', 'ko_tree').setOrigin(0.5, 1).setDepth(py));
       } else {
-        this.decoLayer.add(this.add.image(px + 16, py + 26, 'spr_shrub').setOrigin(0.5, 1));
+        this.decoLayer.add(this.add.image(px + 16, py + 30, 'kobjects', 'ko_bush').setOrigin(0.5, 1));
       }
     }
   }
@@ -317,6 +360,7 @@ export class KingdomScene extends Phaser.Scene {
     if (gx + bt.w > KCOLS || gy + bt.h > KROWS) { toast(this, 'Out of bounds', '#e8a860'); return; }
     for (let dy = 0; dy < bt.h; dy++) for (let dx = 0; dx < bt.w; dx++) {
       if (!this.insideIsland(gx + dx, gy + dy)) { toast(this, 'That is open sky — build on the island', '#e8a860'); return; }
+      if (this.isCrystalTile(gx + dx, gy + dy)) { toast(this, 'The Kingdom Crystal stands here — sacred ground', '#a0d8ff'); return; }
       if (this.occupied(gx + dx, gy + dy)) { toast(this, 'Blocked — pick open ground', '#e8a860'); return; }
     }
     if (store.state.wood < bt.cost.wood || store.state.stone < bt.cost.stone || store.state.gold < bt.cost.gold) {
@@ -383,6 +427,7 @@ export class KingdomScene extends Phaser.Scene {
       return;
     }
     if (!this.insideIsland(gx, gy)) { toast(this, 'That is open sky', '#e8a860'); return; }
+    if (this.isCrystalTile(gx, gy)) { toast(this, 'The Kingdom Crystal stands here', '#a0d8ff'); return; }
     if (this.occupied(gx, gy)) { toast(this, 'A building stands there', '#e8a860'); return; }
     if (store.state.decos.some((d) => d.gx === gx && d.gy === gy)) return;
     const costs = { path: { wood: 0, stone: 2 }, tree: { wood: 4, stone: 0 }, shrub: { wood: 2, stone: 0 } };
