@@ -108,6 +108,10 @@ export class BattleScene extends Phaser.Scene {
     cell('clean_sand', 4, 0);
     cell('clean_mountain', 5, 0);
     cell('clean_park', 1, 14);
+    cell('clean_res', 2, 14);
+    cell('clean_com', 3, 14);
+    cell('clean_ind', 4, 14);
+    cell('clean_civ', 5, 14);
   }
 
   // ---------------- floor construction ----------------
@@ -151,6 +155,7 @@ export class BattleScene extends Phaser.Scene {
         else if (t === 'mountain') cell = { walkable: false, deco: 'wall' };
         else if (t === 'forest' && r() < 0.5) cell = { walkable: false, deco: 'tree' };
         else if ((t === 'grass' || t === 'park') && r() < 0.07) cell = { walkable: false, deco: 'tree' };
+        else if (['res', 'com', 'ind', 'civ'].includes(t) && r() < 0.12) cell = { walkable: false, deco: 'rock' }; // ruin rubble as cover
         this.grid[y][x] = cell;
       }
     }
@@ -199,6 +204,10 @@ export class BattleScene extends Phaser.Scene {
           t === 'sand' ? 'clean_sand' :
           t === 'mountain' ? 'clean_mountain' :
           t === 'park' ? 'clean_park' :
+          t === 'res' ? 'clean_res' :
+          t === 'com' ? 'clean_com' :
+          t === 'ind' ? 'clean_ind' :
+          t === 'civ' ? 'clean_civ' :
           't_grass'; // forest floors render grass; the trees are obstacle decos
         this.groundRT.drawFrame('world-tileset', frame, x * TILE, y * TILE);
       }

@@ -14,17 +14,21 @@ import { bakeAllSprites, MONSTER_SPRITES } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, UI_DEPTH } from '../game/ui';
 import { mulberry32, hashStr, dayKey, cellKey } from '../core/rng';
 
-type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park';
+type Terrain = 'grass' | 'water' | 'forest' | 'path' | 'mountain' | 'town' | 'sand' | 'park' | 'res' | 'com' | 'ind' | 'civ';
 
 const PRIORITY: Record<Terrain, number> = {
-  grass: 0, park: 1, forest: 2, sand: 3, path: 4, town: 5, water: 6, mountain: 7,
+  grass: 0, park: 1, forest: 2, sand: 3, path: 4,
+  town: 5, res: 5, com: 5, ind: 5, civ: 5,
+  water: 6, mountain: 7,
 };
 const AUTOTILE_BLOCKS: Record<string, [number, number]> = {
   water: [0, 1], forest: [4, 1], mountain: [0, 5], road: [4, 5], sand: [0, 9], park: [4, 9],
+  res: [0, 15], com: [4, 15], ind: [0, 19], civ: [4, 19],
 };
 const TERRAIN_BLOCK: Record<Terrain, string | null> = {
   water: 'water', forest: 'forest', mountain: 'mountain', path: 'road', sand: 'sand',
-  park: 'park', grass: null, town: null,
+  park: 'park', res: 'res', com: 'com', ind: 'ind', civ: 'civ',
+  grass: null, town: null,
 };
 
 interface Marker {
@@ -241,10 +245,11 @@ export class WorldScene extends Phaser.Scene {
       this.terrain[y] = [];
       for (let x = 0; x < WORLD_TX; x++) this.terrain[y][x] = 'grass';
     }
-    // Lore: nobody lives on the surface — the kingdoms float. Building
-    // footprints blend back into the land instead of rendering as towns.
+    // Lore: nobody lives on the surface — building footprints render as the
+    // districts they once were, each its own overgrown-ruin terrain.
     const map: Record<string, Terrain> = {
-      building: 'grass', road: 'path', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
+      res: 'res', com: 'com', ind: 'ind', civ: 'civ',
+      road: 'path', water: 'water', forest: 'forest', park: 'park', parking: 'sand',
     };
     for (const f of this.features) {
       const terr = map[f.type];
@@ -305,6 +310,10 @@ export class WorldScene extends Phaser.Scene {
     const clean: Record<string, number> = { water: 1, forest: 2, road: 3, sand: 4, mountain: 5 };
     Object.entries(clean).forEach(([k, c]) => cell(`clean_${k}`, c, 0));
     cell('clean_park', 1, 14);
+    cell('clean_res', 2, 14);
+    cell('clean_com', 3, 14);
+    cell('clean_ind', 4, 14);
+    cell('clean_civ', 5, 14);
     cell('obj_chest', 0, 13);
     cell('obj_cave1', 1, 13);
     cell('obj_cave2', 2, 13);

@@ -5,7 +5,7 @@
 import { GeoPos, haversineM } from './geo';
 import { METERS_PER_TILE, WORLD_TX, WORLD_TY } from '../config/constants';
 
-export type FeatureType = 'building' | 'road' | 'water' | 'forest' | 'park' | 'parking';
+export type FeatureType = 'res' | 'com' | 'ind' | 'civ' | 'road' | 'water' | 'forest' | 'park' | 'parking';
 
 export interface OSMFeature {
   type: FeatureType;
@@ -26,20 +26,39 @@ interface RawElement {
   geometry?: { lat: number; lon: number }[];
 }
 
+const RES_TAGS = new Set(['house', 'residential', 'apartments', 'detached', 'terrace', 'semidetached_house', 'bungalow', 'dormitory', 'hut', 'static_caravan']);
+const IND_TAGS = new Set(['industrial', 'warehouse', 'factory', 'garage', 'garages', 'shed', 'hangar', 'barn', 'silo']);
+const COM_TAGS = new Set(['commercial', 'retail', 'office', 'supermarket', 'kiosk', 'hotel']);
+
+// Zoning: what kind of ruin did this building leave behind?
+function classifyBuilding(t: Record<string, string>): FeatureType {
+  const b = (t.building || '').toLowerCase();
+  if (RES_TAGS.has(b)) return 'res';
+  if (IND_TAGS.has(b)) return 'ind';
+  if (COM_TAGS.has(b) || t.shop || t.office) return 'com';
+  if (b === 'yes' || b === '') {
+    // untyped buildings: use context tags, default to residential (most common)
+    if (t.amenity || t.tourism) return 'civ';
+    return 'res';
+  }
+  return 'civ'; // churches, schools, civic and everything else distinctive
+}
+
 export function parseOSM(data: { elements: RawElement[] }): OSMFeature[] {
   const out: OSMFeature[] = [];
   for (const el of data.elements || []) {
     if (!el.geometry || el.geometry.length === 0) continue;
     const t = el.tags || {};
     let type: FeatureType | null = null;
-    if (t.building) type = 'building';
+    if (t.building) type = classifyBuilding(t);
     else if (t.highway) type = 'road';
     else if (t.natural === 'water' || t.waterway) type = 'water';
     else if (t.landuse === 'forest' || t.natural === 'wood') type = 'forest';
     else if (t.leisure === 'park' || t.landuse === 'grass') type = 'park';
     else if (t.amenity === 'parking') type = 'parking';
     if (!type) continue;
-    const poi = type === 'building' && POI_TAGS.some((k) => t[k]);
+    const isBuilding = type === 'res' || type === 'com' || type === 'ind' || type === 'civ';
+    const poi = isBuilding && POI_TAGS.some((k) => t[k]);
     out.push({ type, id: el.id, geometry: el.geometry, name: t.name, poi });
   }
   return out;
