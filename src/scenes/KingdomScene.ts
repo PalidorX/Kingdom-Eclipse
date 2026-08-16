@@ -21,11 +21,41 @@ import { hashStr } from '../core/rng';
 import { registerTerrainFrames, drawTerrainTile } from '../game/terrainRender';
 import { registerBuildingFrames, BUILDING_FRAMES, SMOKING } from '../game/buildingArt';
 import { mulberry32 } from '../core/rng';
+import { findPath, PathPoint } from '../game/pathfind';
 
 const KCOLS = 24;
 const KROWS = 20;
 const OX = 0;
 const OY = 0;
+
+// Why a visitor crossed the sky to reach your town (keyed by building type)
+const VISIT_REASONS: Record<string, { emote: string; phrase: string }> = {
+  tavern: { emote: '🍺', phrase: 'resting at the inn (+HP)' },
+  townhall: { emote: '📜', phrase: 'petitioning the crown' },
+  farm: { emote: '🌾', phrase: 'buying fresh produce' },
+  house: { emote: '🎁', phrase: 'visiting kin' },
+  storage: { emote: '📦', phrase: 'trading goods' },
+  memorial: { emote: '🕯', phrase: 'paying respects' },
+  knightschool: { emote: '⚔', phrase: 'dreaming of knighthood' },
+  thievesguild: { emote: '🗝', phrase: 'trading whispers' },
+  magetower: { emote: '✦', phrase: 'gawking at the tower' },
+  vanguardhall: { emote: '⚔', phrase: 'watching the drills' },
+  bulwarkkeep: { emote: '🛡', phrase: 'seeking shelter' },
+  rangerslodge: { emote: '🏹', phrase: 'swapping trail tales' },
+  assassinsden: { emote: '…', phrase: 'asking no questions' },
+  sorcerersanctum: { emote: '✧', phrase: 'buying charms' },
+  clericschapel: { emote: '✚', phrase: 'seeking a blessing' },
+};
+
+interface Walker {
+  c: Phaser.GameObjects.Container;
+  img: Phaser.GameObjects.Image;
+  bubble: Phaser.GameObjects.Text | null;
+  gx: number;
+  gy: number;
+  resident: boolean;
+  alive: boolean;
+}
 
 export class KingdomScene extends Phaser.Scene {
   private refreshHud: () => void = () => {};
@@ -33,8 +63,14 @@ export class KingdomScene extends Phaser.Scene {
   private pendingBuild: string | null = null;
   private pendingDeco: 'path' | 'tree' | 'shrub' | 'erase' | null = null;
   private groundRT!: Phaser.GameObjects.RenderTexture;
-  private buildingLayer!: Phaser.GameObjects.Container;
+  // flat ground decor (paths); everything with a footprint lives in
+  // spriteLayer and is y-sorted so walkers pass behind/in front correctly
   private decoLayer!: Phaser.GameObjects.Container;
+  private spriteLayer!: Phaser.GameObjects.Container;
+  private buildingObjs: Phaser.GameObjects.GameObject[] = [];
+  private decoObjs: Phaser.GameObjects.GameObject[] = [];
+  private walkers: Walker[] = [];
+  private needSort = false;
   private hintText: Phaser.GameObjects.Text | null = null;
   // the kingdom is a floating island you pan around
   private kroot!: Phaser.GameObjects.Container;
@@ -59,11 +95,12 @@ export class KingdomScene extends Phaser.Scene {
     );
     this.renderGround();
     this.decoLayer = this.add.container(0, 0);
-    this.buildingLayer = this.add.container(0, 0);
-    this.kroot.add([this.decoLayer, this.buildingLayer]);
+    this.spriteLayer = this.add.container(0, 0);
+    this.kroot.add([this.decoLayer, this.spriteLayer]);
+    this.addCrystal();
     this.renderDecos();
     this.renderBuildings();
-    this.spawnAmbient();
+    this.startKingdomLife();
     this.setupPanning();
 
     const h = hud(this, 'YOUR KINGDOM');
@@ -189,16 +226,18 @@ export class KingdomScene extends Phaser.Scene {
       }
     }
     this.kroot.add(this.groundRT);
+  }
 
-    // THE KINGDOM CRYSTAL — the shard that keeps the island aloft, at the
-    // exact centre, glowing forever
+  // THE KINGDOM CRYSTAL — the shard that keeps the island aloft, at the
+  // exact centre, glowing forever. Every visitor arrives and leaves through it.
+  private addCrystal(): void {
     const ccx = (KCOLS * TILE) / 2;
     const ccy = (KROWS * TILE) / 2;
     const crystal = this.add.sprite(ccx, ccy + 8, 'crystal');
     crystal.setOrigin(0.5, 1);
     crystal.play('crystal_glow');
-    crystal.setDepth(5);
-    this.kroot.add(crystal);
+    crystal.setDepth(ccy + 8);
+    this.spriteLayer.add(crystal);
     this.tweens.add({
       targets: crystal, scaleX: 1.04, scaleY: 1.04,
       duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
@@ -233,21 +272,29 @@ export class KingdomScene extends Phaser.Scene {
       this.panning = false;
       this.time.delayedCall(60, () => { this.panMoved = false; });
     }
+    if (this.needSort) {
+      this.needSort = false;
+      this.spriteLayer.sort('depth');
+    }
   }
 
   private renderDecos(): void {
     this.decoLayer.removeAll(true);
+    this.decoObjs.forEach((o) => o.destroy());
+    this.decoObjs = [];
     for (const d of store.state.decos) {
       const px = OX + d.gx * TILE, py = OY + d.gy * TILE;
       if (d.kind === 'path') {
         const img = this.add.image(px, py, 'kobjects', 'ko_path').setOrigin(0, 0);
         this.decoLayer.add(img);
-      } else if (d.kind === 'tree') {
-        this.decoLayer.add(this.add.image(px + 16, py + 30, 'kobjects', 'ko_tree').setOrigin(0.5, 1).setDepth(py));
       } else {
-        this.decoLayer.add(this.add.image(px + 16, py + 30, 'kobjects', 'ko_bush').setOrigin(0.5, 1));
+        const key = d.kind === 'tree' ? 'ko_tree' : 'ko_bush';
+        const img = this.add.image(px + 16, py + 30, 'kobjects', key).setOrigin(0.5, 1).setDepth(py + 30);
+        this.spriteLayer.add(img);
+        this.decoObjs.push(img);
       }
     }
+    this.needSort = true;
   }
 
   private occupied(gx: number, gy: number): Building | null {
@@ -258,7 +305,8 @@ export class KingdomScene extends Phaser.Scene {
   }
 
   private renderBuildings(): void {
-    this.buildingLayer.removeAll(true);
+    this.buildingObjs.forEach((o) => o.destroy());
+    this.buildingObjs = [];
     for (const b of store.state.buildings) {
       const bt = BUILDING_TYPES[b.type];
       const px = OX + b.gx * TILE, py = OY + b.gy * TILE;
@@ -293,31 +341,220 @@ export class KingdomScene extends Phaser.Scene {
       const hit = this.add.rectangle(px + w / 2, py + hgt / 2, w, hgt, 0, 0).setInteractive();
       hit.on('pointerdown', () => { if (this.mode === 'view') this.openBuilding(b); });
       c.add(hit);
-      this.buildingLayer.add(c);
+      c.setDepth(py + hgt);
+      this.spriteLayer.add(c);
+      this.buildingObjs.push(c);
+    }
+    this.needSort = true;
+  }
+
+  // ---------------- kingdom life: A*-pathing visitors & residents ----------
+  // Visitors materialise at the Kingdom Crystal, walk (preferring laid paths)
+  // to a building for a stated reason — the inn heals them — then walk back
+  // to the crystal and vanish through it. Villagered heroes are residents:
+  // they stroll between buildings but never leave.
+
+  private treeAt(gx: number, gy: number): boolean {
+    return store.state.decos.some((d) => d.kind === 'tree' && d.gx === gx && d.gy === gy);
+  }
+
+  private walkableAt(gx: number, gy: number): boolean {
+    return this.insideIsland(gx, gy) && !this.isCrystalTile(gx, gy)
+      && !this.occupied(gx, gy) && !this.treeAt(gx, gy);
+  }
+
+  private stepCost(gx: number, gy: number): number {
+    const d = store.state.decos.find((x) => x.gx === gx && x.gy === gy);
+    if (d?.kind === 'path') return 1;      // visitors love a good road
+    if (d?.kind === 'shrub') return 4;     // nobody wades through shrubs for fun
+    return 2.5;
+  }
+
+  // tiles ringing the crystal's sacred 2x2 — where arrivals step out
+  private crystalGates(): PathPoint[] {
+    const cx = KCOLS / 2, cy = KROWS / 2;
+    const ring: PathPoint[] = [];
+    for (let x = cx - 2; x <= cx + 1; x++) for (let y = cy - 2; y <= cy + 1; y++) {
+      const onEdge = x === cx - 2 || x === cx + 1 || y === cy - 2 || y === cy + 1;
+      if (onEdge && this.walkableAt(x, y)) ring.push({ x, y });
+    }
+    return ring;
+  }
+
+  // where a walker stands to "use" a building: front door first, then any
+  // adjacent open tile
+  private doorOf(b: Building): PathPoint | null {
+    const cands: PathPoint[] = [{ x: b.gx + Math.floor(b.w / 2), y: b.gy + b.h }];
+    for (let dx = 0; dx < b.w; dx++) cands.push({ x: b.gx + dx, y: b.gy + b.h });
+    for (let dx = 0; dx < b.w; dx++) cands.push({ x: b.gx + dx, y: b.gy - 1 });
+    for (let dy = 0; dy < b.h; dy++) { cands.push({ x: b.gx - 1, y: b.gy + dy }); cands.push({ x: b.gx + b.w, y: b.gy + dy }); }
+    return cands.find((p) => this.walkableAt(p.x, p.y)) ?? null;
+  }
+
+  private tilePx(p: PathPoint): { x: number; y: number } {
+    return { x: OX + p.x * TILE + 16, y: OY + p.y * TILE + 26 };
+  }
+
+  private crystalFlash(): void {
+    const ccx = (KCOLS * TILE) / 2, ccy = (KROWS * TILE) / 2;
+    const s = this.add.text(ccx, ccy - 14, '✦', { fontSize: '16px', color: '#a0e8ff', fontFamily: 'monospace' })
+      .setOrigin(0.5).setDepth(ccy + 60);
+    this.spriteLayer.add(s);
+    this.tweens.add({
+      targets: s, scale: 2.2, alpha: 0, duration: 520, ease: 'Cubic.easeOut',
+      onComplete: () => s.destroy(),
+    });
+    this.needSort = true;
+  }
+
+  private makeWalker(at: PathPoint, resident: boolean, sprKey: string, nameLabel?: string): Walker {
+    const p = this.tilePx(at);
+    const c = this.add.container(p.x, p.y);
+    const img = this.add.image(0, 0, sprKey).setOrigin(0.5, 0.9).setScale(0.6);
+    c.add(img);
+    if (nameLabel) {
+      c.add(this.add.text(0, -34, nameLabel, {
+        fontSize: '7px', color: '#c8c8a0', fontFamily: 'monospace', align: 'center',
+        backgroundColor: '#00000088', padding: { x: 2, y: 1 },
+      }).setOrigin(0.5, 1));
+    }
+    c.setDepth(p.y);
+    this.spriteLayer.add(c);
+    this.needSort = true;
+    const w: Walker = { c, img, bubble: null, gx: at.x, gy: at.y, resident, alive: true };
+    this.walkers.push(w);
+    return w;
+  }
+
+  private killWalker(w: Walker): void {
+    w.alive = false;
+    this.tweens.killTweensOf(w.c);
+    w.c.destroy();
+    this.walkers = this.walkers.filter((x) => x !== w);
+  }
+
+  private walkerStep(w: Walker, path: PathPoint[], i: number, done: () => void): void {
+    if (!w.alive) return;
+    if (i >= path.length) { done(); return; }
+    const p = this.tilePx(path[i]);
+    if (p.x !== w.c.x) w.img.setFlipX(p.x < w.c.x);
+    w.gx = path[i].x; w.gy = path[i].y;
+    this.tweens.add({
+      targets: w.c, x: p.x, y: p.y, duration: 300,
+      onUpdate: () => { w.c.setDepth(w.c.y); this.needSort = true; },
+      onComplete: () => this.walkerStep(w, path, i + 1, done),
+    });
+  }
+
+  private routeTo(w: Walker, dest: PathPoint): PathPoint[] | null {
+    return findPath(KCOLS, KROWS,
+      (x, y) => this.walkableAt(x, y), (x, y) => this.stepCost(x, y),
+      w.gx, w.gy, dest.x, dest.y);
+  }
+
+  private lingerAt(w: Walker, b: Building, then: () => void): void {
+    if (!w.alive) return;
+    const reason = VISIT_REASONS[b.type] ?? { emote: '…', phrase: `visiting the ${b.name}` };
+    w.bubble = this.add.text(0, -34 - (w.resident ? 14 : 0), `${reason.emote} ${reason.phrase}`, {
+      fontSize: '7px', color: '#ffe8b0', fontFamily: 'monospace',
+      backgroundColor: '#000000aa', padding: { x: 3, y: 1 },
+    }).setOrigin(0.5, 1);
+    w.c.add(w.bubble);
+    // the stated example: visitors sleep off their wounds at the inn
+    const heartTimer = b.type === 'tavern'
+      ? this.time.addEvent({
+        delay: 750, repeat: 5,
+        callback: () => {
+          if (!w.alive) return;
+          const h = this.add.text(Phaser.Math.Between(-8, 8), -20, '+♥', {
+            fontSize: '8px', color: '#7ae87a', fontFamily: 'monospace',
+          }).setOrigin(0.5);
+          w.c.add(h);
+          this.tweens.add({ targets: h, y: h.y - 16, alpha: 0, duration: 900, onComplete: () => h.destroy() });
+        },
+      })
+      : null;
+    this.time.delayedCall(3800 + Math.random() * 3200, () => {
+      heartTimer?.remove();
+      if (!w.alive) return;
+      w.bubble?.destroy();
+      w.bubble = null;
+      then();
+    });
+  }
+
+  private visitorCap(): number {
+    return Math.min(1 + store.state.buildings.length, 5);
+  }
+
+  private spawnVisitor(): void {
+    if (!store.state.buildings.length) return;
+    if (this.walkers.filter((w) => w.alive && !w.resident).length >= this.visitorCap()) return;
+    const gates = this.crystalGates();
+    if (!gates.length) return;
+    const gate = Phaser.Utils.Array.GetRandom(gates);
+    // pick a destination that is actually reachable from the crystal
+    const opts = Phaser.Utils.Array.Shuffle([...store.state.buildings]);
+    for (const b of opts) {
+      const door = this.doorOf(b);
+      if (!door) continue;
+      const probe: Walker = { gx: gate.x, gy: gate.y } as Walker;
+      const path = this.routeTo(probe, door);
+      if (!path) continue;
+      const w = this.makeWalker(gate, false, 'spr_villager');
+      w.img.setTint(Phaser.Utils.Array.GetRandom([0xffffff, 0xe8d8c0, 0xc8d8e8, 0xd8e8c8, 0xe8c8c8]));
+      this.crystalFlash();
+      w.c.setAlpha(0);
+      this.tweens.add({ targets: w.c, alpha: 1, duration: 450 });
+      this.walkerStep(w, path, 0, () => this.lingerAt(w, b, () => this.departVisitor(w)));
+      return;
     }
   }
 
-  private spawnAmbient(): void {
-    // villagers (villagered heroes + a base pair) drift along the ground
-    const vills = store.villagers().slice(0, 4);
-    const count = 2 + vills.length;
-    for (let i = 0; i < count; i++) {
-      const hero = vills[i - 2];
-      const key = hero ? `spr_job_${hero.job}` : 'spr_villager';
-      const c = this.add.container(OX + 120 + ((i * 90) % (KCOLS * TILE - 240)), OY + 120 + ((i * 130) % (KROWS * TILE - 240)));
-      this.kroot.add(c);
-      c.add(this.add.image(0, 0, key).setOrigin(0.5, 0.9).setScale(0.6));
-      if (hero) {
-        c.add(this.add.text(0, -44, `${hero.name}\n(villager)`, {
-          fontSize: '7px', color: '#c8c8a0', fontFamily: 'monospace', align: 'center',
-          backgroundColor: '#00000088', padding: { x: 2, y: 1 },
-        }).setOrigin(0.5, 1));
-      }
-      this.tweens.add({
-        targets: c, x: c.x + 40 + Math.random() * 50, duration: 3000 + i * 700,
-        yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
-      });
+  private departVisitor(w: Walker): void {
+    if (!w.alive) return;
+    const gates = this.crystalGates();
+    const gate = gates.length ? Phaser.Utils.Array.GetRandom(gates) : null;
+    const path = gate ? this.routeTo(w, gate) : null;
+    const leave = () => {
+      if (!w.alive) return;
+      this.crystalFlash();
+      this.tweens.add({ targets: w.c, alpha: 0, duration: 450, onComplete: () => this.killWalker(w) });
+    };
+    if (path) this.walkerStep(w, path, 0, leave);
+    else leave();
+  }
+
+  // villagered heroes live here: they stroll building to building forever
+  private residentLoop(w: Walker): void {
+    if (!w.alive) return;
+    const opts = Phaser.Utils.Array.Shuffle([...store.state.buildings]);
+    for (const b of opts) {
+      const door = this.doorOf(b);
+      if (!door || (door.x === w.gx && door.y === w.gy)) continue;
+      const path = this.routeTo(w, door);
+      if (!path) continue;
+      this.walkerStep(w, path, 0, () => this.lingerAt(w, b, () => {
+        this.time.delayedCall(1500 + Math.random() * 2500, () => this.residentLoop(w));
+      }));
+      return;
     }
+    this.time.delayedCall(4000, () => this.residentLoop(w));
+  }
+
+  private startKingdomLife(): void {
+    this.walkers = [];
+    const vills = store.villagers().slice(0, 4);
+    vills.forEach((hero, i) => {
+      const b = store.state.buildings[i % Math.max(1, store.state.buildings.length)];
+      const at = (b && this.doorOf(b)) ?? this.crystalGates()[0];
+      if (!at) return;
+      const w = this.makeWalker(at, true, `spr_job_${hero.job}`, `${hero.name}\n(villager)`);
+      this.time.delayedCall(600 + i * 900, () => this.residentLoop(w));
+    });
+    // a first arrival almost immediately, then a steady trickle
+    this.time.delayedCall(1200, () => this.spawnVisitor());
+    this.time.addEvent({ delay: 7000, loop: true, callback: () => this.spawnVisitor() });
   }
 
   // ---------------- build & landscape ----------------
