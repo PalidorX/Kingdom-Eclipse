@@ -190,6 +190,7 @@ export class BattleScene extends Phaser.Scene {
       if (t === 'forest') return null;
       return TERRAIN_TO_BLOCK[t] ?? null;
     };
+    this.groundRT.beginDraw();
     for (let y = 0; y < BATTLE_ROWS; y++) {
       for (let x = 0; x < BATTLE_COLS; x++) {
         const b = blockOf(x, y);
@@ -199,6 +200,7 @@ export class BattleScene extends Phaser.Scene {
         });
       }
     }
+    this.groundRT.endDraw();
     const g = this.add.graphics().setDepth(2);
     for (let y = 0; y <= BATTLE_ROWS; y++) g.lineStyle(1, 0x000000, 0.1).lineBetween(GRID_X, GRID_Y + y * TILE, GRID_X + BATTLE_COLS * TILE, GRID_Y + y * TILE);
     for (let x = 0; x <= BATTLE_COLS; x++) g.lineStyle(1, 0x000000, 0.1).lineBetween(GRID_X + x * TILE, GRID_Y, GRID_X + x * TILE, GRID_Y + BATTLE_ROWS * TILE);

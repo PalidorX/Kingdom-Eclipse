@@ -5,7 +5,10 @@ export const TILE = 32;
 // World map: viewport tiles + pan margin
 export const VIEW_TX = Math.ceil(GAME_WIDTH / TILE);   // 12
 export const VIEW_TY = Math.ceil(GAME_HEIGHT / TILE);  // 21
-export const PAN_MARGIN = 14;
+// generous margin so the map never runs out under a walking player: the
+// world rebuilds around them at ~70m from the pin, and 24 tiles = 120m of
+// drawn ground past the view in every direction
+export const PAN_MARGIN = 24;
 export const WORLD_TX = VIEW_TX + PAN_MARGIN * 2;
 export const WORLD_TY = VIEW_TY + PAN_MARGIN * 2;
 export const METERS_PER_TILE = 5;

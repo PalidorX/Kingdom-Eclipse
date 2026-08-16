@@ -218,6 +218,7 @@ export class KingdomScene extends Phaser.Scene {
     sh.fillStyle(0x000000, 0.25);
     sh.fillEllipse(OX + (KCOLS * TILE) / 2, OY + KROWS * TILE + 14, KCOLS * TILE * 0.7, 40);
     this.kroot.add(sh);
+    this.groundRT.beginDraw();
     for (let y = 0; y < KROWS; y++) {
       for (let x = 0; x < KCOLS; x++) {
         if (!this.island[y][x]) continue;
@@ -225,6 +226,7 @@ export class KingdomScene extends Phaser.Scene {
           (nx, ny) => this.insideIsland(nx, ny), false);
       }
     }
+    this.groundRT.endDraw();
     this.kroot.add(this.groundRT);
   }
 

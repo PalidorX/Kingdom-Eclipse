@@ -65,6 +65,8 @@ const QUAD_TABLE: Record<string, { dx: number; dy: number; c: [number, number]; 
 
 // Draw one terrain tile at (px,py) on the render texture. `sameAt` reports
 // whether the tile at grid (x,y) belongs to the same block (off-grid = true).
+// NOTE: uses batchDrawFrame — callers must wrap tile loops in
+// rt.beginDraw() ... rt.endDraw() (one GPU pass for the whole map).
 export function drawTerrainTile(
   rt: Phaser.GameObjects.RenderTexture,
   block: string | null,
@@ -75,7 +77,7 @@ export function drawTerrainTile(
   sameAt: (x: number, y: number) => boolean,
   underlay = true
 ): void {
-  if (underlay) rt.drawFrame('world-tileset', 't_grass', px, py);
+  if (underlay) rt.batchDrawFrame('world-tileset', 't_grass', px, py);
   if (!block) return;
 
   // neighbour signs per quadrant: TL checks west/north/northwest, etc.
@@ -96,6 +98,6 @@ export function drawTerrainTile(
     else if (h && !v) frame = `${block}_m_${t.h[0]}_${t.h[1]}`;     // top/bottom edge
     else if (v && !h) frame = `${block}_m_${t.v[0]}_${t.v[1]}`;     // left/right edge
     else frame = `${block}_m_${t.o[0]}_${t.o[1]}`;                  // outer corner
-    rt.drawFrame('world-tileset', frame, px + t.dx, py + t.dy);
+    rt.batchDrawFrame('world-tileset', frame, px + t.dx, py + t.dy);
   }
 }

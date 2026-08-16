@@ -44,8 +44,10 @@ export class WorldScene extends Phaser.Scene {
   private mapLayer!: Phaser.GameObjects.Container;
   private markerLayer!: Phaser.GameObjects.Container;
   private playerObj!: Phaser.GameObjects.Container;
-  private ring!: Phaser.GameObjects.Graphics;
   private markers: Marker[] = [];
+  // camera follows the player unless the user pans away; ⌖ re-engages it
+  private followMode = true;
+  private rebuildingWorld = false;
   private refreshHud: () => void = () => {};
   private maxPanX = 0; private maxPanY = 0;
   private panning = false; private panMoved = false;
@@ -72,8 +74,6 @@ export class WorldScene extends Phaser.Scene {
     this.markerLayer = this.add.container(baseX, baseY);
     this.worldRoot.add([this.mapLayer, this.markerLayer]);
 
-    this.ring = this.add.graphics();
-    this.markerLayer.add(this.ring);
     this.playerObj = this.makePlayer();
     this.markerLayer.add(this.playerObj);
 
@@ -82,10 +82,11 @@ export class WorldScene extends Phaser.Scene {
     this.buildWorld(mapData ?? null);
 
     this.setupPanning();
-    makeButton(this, 44, GAME_HEIGHT - 84, 64, 30, '⌖ center', () => {
+    makeButton(this, 44, GAME_HEIGHT - 84, 64, 30, '⌖ center', async () => {
       this.viewCenter = null;
-      this.reloadWorld();
-      this.tweens.add({ targets: this.worldRoot, x: 0, y: 0, duration: 280, ease: 'Cubic.easeOut' });
+      this.followMode = true;
+      await this.reloadWorld();
+      this.snapFollow(true);
     }, { color: 0x1c2c4c }).setDepth(UI_DEPTH);
 
     // battle outcome → onboarding advances (BEFORE nav renders, so lock state is fresh)
@@ -207,8 +208,20 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async reloadWorld(): Promise<void> {
-    const data = await getMapData(geo.pos);
-    this.buildWorld(data);
+    if (this.rebuildingWorld) return;
+    this.rebuildingWorld = true;
+    try {
+      const data = await getMapData(geo.pos);
+      // cache hit on the current pin: same map — reposition only, no redraw
+      if (data && this.terrain.length &&
+          data.pinned.lat === this.pinned.lat && data.pinned.lon === this.pinned.lon) {
+        this.updatePlayer();
+        return;
+      }
+      await this.buildWorld(data);
+    } finally {
+      this.rebuildingWorld = false;
+    }
   }
 
   private genProceduralTerrain(): void {
@@ -305,6 +318,7 @@ export class WorldScene extends Phaser.Scene {
       if (x < 0 || y < 0 || x >= WORLD_TX || y >= WORLD_TY) return 'edge';
       return TERRAIN_TO_BLOCK[this.terrain[y][x]] ?? null;
     };
+    rt.beginDraw();
     for (let y = 0; y < WORLD_TY; y++) {
       for (let x = 0; x < WORLD_TX; x++) {
         const b = TERRAIN_TO_BLOCK[this.terrain[y][x]] ?? null;
@@ -315,10 +329,11 @@ export class WorldScene extends Phaser.Scene {
         // ruins read as blocked ground: scatter rubble on district tiles
         if (b === 'res' || b === 'com' || b === 'ind' || b === 'civ') {
           const n = hashStr(`rub|${x}|${y}`) % 100;
-          if (n < 30) rt.drawFrame('world-tileset', 'obj_rubble', x * TILE, y * TILE);
+          if (n < 30) rt.batchDrawFrame('world-tileset', 'obj_rubble', x * TILE, y * TILE);
         }
       }
     }
+    rt.endDraw();
     this.mapLayer.add(rt);
   }
 
@@ -645,7 +660,17 @@ export class WorldScene extends Phaser.Scene {
 
   private makePlayer(): Phaser.GameObjects.Container {
     const c = this.add.container(0, 0);
-    c.add(this.add.image(0, 0, 'spr_job_Knight').setOrigin(0.5, 0.9).setScale(0.8));
+    // interaction ring travels with the player
+    const ring = this.add.graphics();
+    const radiusPx = (INTERACT_RADIUS_M / METERS_PER_TILE) * TILE;
+    ring.lineStyle(2, 0x66ccff, 0.4);
+    ring.strokeCircle(0, 0, radiusPx);
+    ring.fillStyle(0x66ccff, 0.05);
+    ring.fillCircle(0, 0, radiusPx);
+    c.add(ring);
+    const img = this.add.image(0, 0, 'spr_job_Knight').setOrigin(0.5, 0.9).setScale(0.8);
+    c.add(img);
+    c.setData('img', img);
     c.add(this.add.text(0, -52, 'YOU', {
       fontSize: '8px', color: '#ffffff', fontFamily: 'monospace', backgroundColor: '#2244aacc', padding: { x: 3, y: 1 },
     }).setOrigin(0.5, 1));
@@ -653,26 +678,68 @@ export class WorldScene extends Phaser.Scene {
     return c;
   }
 
-  private updatePlayer(): void {
+  // ---- camera follow: the world root shifts so the player sits at screen
+  // centre; panning hands control to the user, ⌖ hands it back ----
+
+  private followEngaged(): boolean {
+    return this.followMode && this.viewCenter === null && !this.panning;
+  }
+
+  private followTarget(): { x: number; y: number } {
+    return {
+      x: Math.round(GAME_WIDTH / 2 - (this.mapLayer.x + this.playerObj.x)),
+      y: Math.round(GAME_HEIGHT / 2 - (this.mapLayer.y + this.playerObj.y)),
+    };
+  }
+
+  private snapFollow(animate: boolean): void {
+    const t = this.followTarget();
+    this.tweens.killTweensOf(this.worldRoot);
+    if (animate) {
+      this.tweens.add({ targets: this.worldRoot, x: t.x, y: t.y, duration: 320, ease: 'Cubic.easeOut' });
+    } else {
+      this.worldRoot.setPosition(t.x, t.y);
+    }
+  }
+
+  // GPS moved: walk the player there (snapping only on teleport-sized jumps)
+  private updatePlayer(animate = false): void {
     const t = this.playerTile();
-    this.playerObj.setPosition(t.x * TILE, t.y * TILE);
-    const radiusPx = (INTERACT_RADIUS_M / METERS_PER_TILE) * TILE;
-    this.ring.clear();
-    this.ring.lineStyle(2, 0x66ccff, 0.4);
-    this.ring.strokeCircle(t.x * TILE, t.y * TILE, radiusPx);
-    this.ring.fillStyle(0x66ccff, 0.05);
-    this.ring.fillCircle(t.x * TILE, t.y * TILE, radiusPx);
+    const nx = t.x * TILE, ny = t.y * TILE;
+    const dx = nx - this.playerObj.x, dy = ny - this.playerObj.y;
+    const dist = Math.hypot(dx, dy);
+    const img = this.playerObj.getData('img') as Phaser.GameObjects.Image;
+    if (Math.abs(dx) > 2) img.setFlipX(dx < 0);
+    this.tweens.killTweensOf(this.playerObj);
+    if (!animate || dist < 1 || dist > 14 * TILE) {
+      this.playerObj.setPosition(nx, ny);
+      if (this.followEngaged()) this.snapFollow(false);
+      return;
+    }
+    // ~3 tiles/sec walking pace, clamped so tiny GPS steps stay snappy
+    const dur = Phaser.Math.Clamp((dist / (3 * TILE)) * 1000, 220, 2600);
+    this.tweens.add({
+      targets: this.playerObj, x: nx, y: ny, duration: dur, ease: 'Sine.easeInOut',
+      onUpdate: () => { if (this.followEngaged()) this.snapFollow(false); },
+    });
+    // little step-bob while moving
+    this.tweens.killTweensOf(img);
+    img.y = 0;
+    this.tweens.add({
+      targets: img, y: -2, duration: 150, yoyo: true,
+      repeat: Math.max(0, Math.floor(dur / 300) - 1), ease: 'Sine.easeInOut',
+      onComplete: () => { img.y = 0; },
+    });
   }
 
   private onPositionChanged(): void {
     if (!this.scene.isActive()) return;
-    this.updatePlayer();
-    // spawns regenerate as the player walks (new area = new seed cell).
-    // Never rebuild around the player while the view is panned away — GPS
-    // jitter was yanking the camera home.
-    const panned = this.viewCenter !== null ||
-      Math.abs(this.worldRoot.x) > 40 || Math.abs(this.worldRoot.y) > 40;
-    if (!panned && haversineM(geo.pos, this.pinned) > 80) this.reloadWorld();
+    this.updatePlayer(true);
+    // While following, rebuild around the player before the drawn margin can
+    // run out (margin 120m, rebuild at 70m). Never rebuild while the view is
+    // panned away — GPS jitter was yanking the camera home.
+    const panned = this.viewCenter !== null || !this.followMode;
+    if (!panned && haversineM(geo.pos, this.pinned) > 70) this.reloadWorld();
   }
 
   // ---------------- panning ----------------
@@ -693,7 +760,10 @@ export class WorldScene extends Phaser.Scene {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!this.panning || !p.isDown) return;
       const dx = p.worldX - this.panSX, dy = p.worldY - this.panSY;
-      if (Math.abs(dx) + Math.abs(dy) > 10) this.panMoved = true;
+      if (Math.abs(dx) + Math.abs(dy) > 10) {
+        this.panMoved = true;
+        this.followMode = false; // the user took the camera; ⌖ gives it back
+      }
       // endless scroll: no clamp — the world re-centres when you let go
       this.worldRoot.x = this.panOX + dx;
       this.worldRoot.y = this.panOY + dy;
@@ -706,7 +776,9 @@ export class WorldScene extends Phaser.Scene {
     if (!this.panning) return;
     this.panning = false;
     this.time.delayedCall(50, () => { this.panMoved = false; });
-    this.maybeRecenterView();
+    // in follow mode the world root legitimately sits far from (0,0) —
+    // recentring is only for a view the user has panned away
+    if (!this.followMode) this.maybeRecenterView();
   }
 
   // Phaser can miss pointerup after a drag; poll the pointer as a backstop
