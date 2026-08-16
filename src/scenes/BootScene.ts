@@ -17,6 +17,8 @@ export class BootScene extends Phaser.Scene {
     this.load.spritesheet('crystal', `${import.meta.env.BASE_URL}assets/crystal.png?v=${__BUILD_TS__}`, { frameWidth: 32, frameHeight: 48 });
     this.load.image('clouds', `${import.meta.env.BASE_URL}assets/clouds.png?v=${__BUILD_TS__}`);
     this.load.image('kobjects', `${import.meta.env.BASE_URL}assets/kingdom-objects.png?v=${__BUILD_TS__}`);
+    this.load.image('buildings', `${import.meta.env.BASE_URL}assets/buildings.png?v=${__BUILD_TS__}`);
+    this.load.spritesheet('smoke', `${import.meta.env.BASE_URL}assets/smoke.png?v=${__BUILD_TS__}`, { frameWidth: 32, frameHeight: 64 });
   }
 
   async create(): Promise<void> {

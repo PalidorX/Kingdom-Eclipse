@@ -19,6 +19,7 @@ import { bakeAllSprites } from '../game/sprites';
 import { hud, bottomNav, toast, modal, makeButton, confirmDialog, UI_DEPTH } from '../game/ui';
 import { hashStr } from '../core/rng';
 import { registerTerrainFrames, drawTerrainTile } from '../game/terrainRender';
+import { registerBuildingFrames, BUILDING_FRAMES, SMOKING } from '../game/buildingArt';
 import { mulberry32 } from '../core/rng';
 
 const KCOLS = 24;
@@ -104,6 +105,7 @@ export class KingdomScene extends Phaser.Scene {
 
   private defineTiles(): void {
     registerTerrainFrames(this);
+    registerBuildingFrames(this);
     const ko = this.textures.get('kobjects');
     const add = (n: string, x: number, y: number, w: number, h: number) => { if (!ko.has(n)) ko.add(n, 0, x, y, w, h); };
     add('ko_tree', 0, 0, 64, 64);
@@ -112,6 +114,7 @@ export class KingdomScene extends Phaser.Scene {
     add('ko_bush2', 32, 64, 32, 32);
     add('ko_barrel', 64, 64, 32, 32);
     add('ko_crate', 96, 64, 32, 32);
+    add('ko_path', 0, 96, 32, 32);
     const cl = this.textures.get('clouds');
     const cadd = (n: string, x: number, y: number, w: number, h: number) => { if (!cl.has(n)) cl.add(n, 0, x, y, w, h); };
     cadd('cloud_l', 0, 0, 120, 44);
@@ -237,7 +240,7 @@ export class KingdomScene extends Phaser.Scene {
     for (const d of store.state.decos) {
       const px = OX + d.gx * TILE, py = OY + d.gy * TILE;
       if (d.kind === 'path') {
-        const img = this.add.image(px, py, 'world-tileset', 'clean_road').setOrigin(0, 0);
+        const img = this.add.image(px, py, 'kobjects', 'ko_path').setOrigin(0, 0);
         this.decoLayer.add(img);
       } else if (d.kind === 'tree') {
         this.decoLayer.add(this.add.image(px + 16, py + 30, 'kobjects', 'ko_tree').setOrigin(0.5, 1).setDepth(py));
@@ -262,17 +265,18 @@ export class KingdomScene extends Phaser.Scene {
       const w = b.w * TILE, hgt = b.h * TILE;
       const c = this.add.container(0, 0);
       const g = this.add.graphics();
-      g.fillStyle(0x000000, 0.2);
-      g.fillRect(px + 3, py + 6, w, hgt);
-      g.fillStyle(bt.wall, 1);
-      g.fillRect(px, py + hgt * 0.3, w, hgt * 0.7);
-      g.fillStyle(bt.roof, 1);
-      g.fillRect(px - 3, py, w + 6, hgt * 0.34);
-      g.fillStyle(0xffffff, 0.18);
-      g.fillRect(px - 3, py, w + 6, 4);
-      g.fillStyle(0x5a3a1a, 1);
-      g.fillRect(px + w / 2 - 7, py + hgt - 16, 14, 16);
+      g.fillStyle(0x000000, 0.22);
+      g.fillEllipse(px + w / 2, py + hgt - 2, w * 0.95, 12);
       c.add(g);
+      const frameKey = BUILDING_FRAMES[b.type] ? `bld_${b.type}` : 'bld_house';
+      c.add(this.add.image(px, py, 'buildings', frameKey).setOrigin(0, 0));
+      if (SMOKING.has(b.type)) {
+        const sm = this.add.sprite(px + w - 12, py - 22, 'smoke');
+        sm.setOrigin(0.5, 0.3);
+        sm.setAlpha(0.8);
+        sm.play({ key: 'smoke_puff', delay: (b.gx * 331) % 900 });
+        c.add(sm);
+      }
       const stars = '★'.repeat(b.stars) + '☆'.repeat(Math.max(0, MAX_STARS - b.stars));
       c.add(this.add.text(px + w / 2, py - 3, `${b.name}\n${stars}`, {
         fontSize: '8px', color: '#ffe080', fontFamily: 'monospace', align: 'center',

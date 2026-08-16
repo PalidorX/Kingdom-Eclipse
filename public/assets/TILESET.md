@@ -19,6 +19,15 @@ Row 10: clean fills — res com ind civ
 Row 11: objects — crate · cave (short) · cavern (medium) · volcano (epic)
   · tree · gold crate (rare) · rubble (transparent-backed)
 
+## Companion atlases (same license terms — raw packs never committed)
+- buildings.png (512x256): 15 JRPG-scale building facades composed at
+  bake time from "Tiny Tales Overworld 2D Tileset" (Mega Tiles / Rayane
+  Félix) A3 roof+wall autotiles, village doors/windows, and the INN sign,
+  upscaled 2x to the 32px grid. Frames in src/game/buildingArt.ts.
+- smoke.png (96x64): 3-frame chimney smoke from the same pack.
+- kingdom-objects.png / crystal.png / clouds.png: kingdom decor, the
+  animated Kingdom Crystal, and pixel clouds, same source packs.
+
 Rendering: src/game/terrainRender.ts composes each 32px tile from four
 16px quadrants of the A2 block using 8-neighbour logic (dual-grid).
 Roads: OSM streets render as 'paved' (stone); footpaths/tracks as the
