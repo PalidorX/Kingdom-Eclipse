@@ -56,7 +56,9 @@ export function makeButton(
   t.setShadow(0, 1, '#000000', 2);
   c.add(t);
   plate.setInteractive();
-  plate.on('pointerdown', (_p: Phaser.Input.Pointer, _x: number, _y: number, ev: Phaser.Types.Input.EventData) => {
+  // fire on release with a drag guard, so panning over a button is harmless
+  plate.on('pointerup', (p: Phaser.Input.Pointer, _x: number, _y: number, ev: Phaser.Types.Input.EventData) => {
+    if (p.getDistance() >= 12) return;
     ev.stopPropagation();
     onTap();
   });
@@ -152,7 +154,8 @@ export function modal(
   const close = () => { root.destroy(); onClose?.(); };
   const x = scene.add.image(GAME_WIDTH - 36, 92, 'ui', 'ui_closex').setDisplaySize(32, 32);
   x.setInteractive();
-  x.on('pointerdown', (_p: Phaser.Input.Pointer, _x: number, _y: number, ev: Phaser.Types.Input.EventData) => {
+  x.on('pointerup', (p: Phaser.Input.Pointer, _x: number, _y: number, ev: Phaser.Types.Input.EventData) => {
+    if (p.getDistance() >= 12) return;
     ev.stopPropagation();
     close();
   });

@@ -33,6 +33,10 @@ export function registerTerrainFrames(scene: Phaser.Scene): void {
     if (!tex.has(name)) tex.add(name, 0, px, py, w, h);
   };
   add('t_grass', 0, 0, 32, 32);
+  // grass texture variants — hash-picked per tile so the meadow never bands
+  add('t_grass2', 4 * 32, 10 * 32, 32, 32);
+  add('t_grass3', 5 * 32, 10 * 32, 32, 32);
+  add('t_grass4', 6 * 32, 10 * 32, 32, 32);
   const cleanRow0 = ['water', 'forest', 'mountain', 'road', 'paved', 'sand', 'park'];
   cleanRow0.forEach((n, i) => add(`clean_${n}`, (i + 1) * 32, 0, 32, 32));
   ['res', 'com', 'ind', 'civ'].forEach((n, i) => add(`clean_${n}`, i * 32, 10 * 32, 32, 32));
@@ -77,7 +81,13 @@ export function drawTerrainTile(
   sameAt: (x: number, y: number) => boolean,
   underlay = true
 ): void {
-  if (underlay) rt.batchDrawFrame('world-tileset', 't_grass', px, py);
+  if (underlay) {
+    // deterministic per-tile variant: mostly plain, sometimes tufted
+    const h = ((x * 73856093) ^ (y * 19349663)) >>> 0;
+    const v = h % 7;
+    const frame = v === 1 ? 't_grass2' : v === 3 ? 't_grass3' : v === 5 ? 't_grass4' : 't_grass';
+    rt.batchDrawFrame('world-tileset', frame, px, py);
+  }
   if (!block) return;
 
   // neighbour signs per quadrant: TL checks west/north/northwest, etc.

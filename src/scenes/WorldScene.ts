@@ -79,7 +79,14 @@ export class WorldScene extends Phaser.Scene {
 
     const mapData = this.registry.get('mapData') as { features: OSMFeature[]; pinned: GeoPos } | null;
     this.registry.remove('mapData');
-    this.buildWorld(mapData ?? null);
+    if (mapData) {
+      this.buildWorld(mapData);
+    } else {
+      // re-entering the scene (from the Kingdom, or after a WebGL context
+      // restore): pull the cached OSM area — never fall back to fake terrain
+      // when real streets are in the cache
+      getMapData(geo.pos).then((d) => this.buildWorld(d));
+    }
 
     this.setupPanning();
     makeButton(this, 44, GAME_HEIGHT - 84, 64, 30, '⌖ center', async () => {
@@ -515,7 +522,11 @@ export class WorldScene extends Phaser.Scene {
       this.tweens.add({ targets: lt, y: lt.y - 5, yoyo: true, repeat: -1, duration: 500 });
     }
     const hit = this.add.rectangle(0, -10, 40, 44, 0, 0).setInteractive();
-    hit.on('pointerdown', () => { if (!this.panMoved) this.tapMarker(m); });
+    // fire on release, and only if the finger didn't drag — so panning
+    // across a marker never opens it
+    hit.on('pointerup', (p: Phaser.Input.Pointer) => {
+      if (!this.panMoved && p.getDistance() < 12) this.tapMarker(m);
+    });
     c.add(hit);
     this.markerLayer.add(c);
     this.markers.push(m);
@@ -749,13 +760,6 @@ export class WorldScene extends Phaser.Scene {
       this.panning = true; this.panMoved = false;
       this.panSX = p.worldX; this.panSY = p.worldY;
       this.panOX = this.worldRoot.x; this.panOY = this.worldRoot.y;
-      if (this.teleportTapMode && p.worldY > 60 && p.worldY < GAME_HEIGHT - 60) {
-        const wx = p.worldX - this.worldRoot.x - this.mapLayer.x;
-        const wy = p.worldY - this.worldRoot.y - this.mapLayer.y;
-        const pos = this.tileToLatLon(wx / TILE, wy / TILE);
-        this.teleportTapMode = false;
-        this.adminTeleport(pos);
-      }
     });
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!this.panning || !p.isDown) return;
@@ -768,7 +772,17 @@ export class WorldScene extends Phaser.Scene {
       this.worldRoot.x = this.panOX + dx;
       this.worldRoot.y = this.panOY + dy;
     });
-    this.input.on('pointerup', () => this.settlePan());
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
+      // tap-to-teleport resolves on release, never mid-drag
+      if (this.teleportTapMode && !this.panMoved && p.getDistance() < 12 &&
+          p.worldY > 60 && p.worldY < GAME_HEIGHT - 60) {
+        const wx = p.worldX - this.worldRoot.x - this.mapLayer.x;
+        const wy = p.worldY - this.worldRoot.y - this.mapLayer.y;
+        this.teleportTapMode = false;
+        this.adminTeleport(this.tileToLatLon(wx / TILE, wy / TILE));
+      }
+      this.settlePan();
+    });
     this.input.on('pointerupoutside', () => this.settlePan());
   }
 

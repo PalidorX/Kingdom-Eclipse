@@ -38,9 +38,24 @@ window.addEventListener('load', () => {
     pixelArt: true,
   });
 
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) game.pause();
-    else game.resume();
+  // Phaser pauses/resumes on tab visibility by itself — a manual pause here
+  // was double-pausing and could wedge the loop on mobile tab-switches.
+  // What Phaser can't recover alone: Android reclaiming the WebGL context
+  // wipes every RenderTexture (all our maps). When the context comes back,
+  // restart the live scenes so they redraw from scratch.
+  game.events.once(Phaser.Core.Events.READY, () => {
+    if (game.renderer.type === Phaser.WEBGL) {
+      (game.renderer as Phaser.Renderer.WebGL.WebGLRenderer).on(
+        Phaser.Renderer.Events.RESTORE_WEBGL,
+        () => {
+          game.scene.getScenes(true).forEach((s) => {
+            // a battle can't replay its launch data — retreat to the surface
+            if (s.scene.key === 'BattleScene') s.scene.start('WorldScene');
+            else s.scene.restart();
+          });
+        }
+      );
+    }
   });
 
   (window as unknown as { game: Phaser.Game }).game = game;

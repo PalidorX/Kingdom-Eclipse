@@ -56,7 +56,14 @@ class Geo {
     this.watchId = navigator.geolocation.watchPosition(
       (p) => {
         this.gpsAvailable = true;
-        this.current = { lat: p.coords.latitude, lon: p.coords.longitude };
+        const next = { lat: p.coords.latitude, lon: p.coords.longitude };
+        // deadband: idle GPS jitter must not walk the player around.
+        // Scales with reported accuracy, clamped so real walking always
+        // registers within a step or two.
+        const acc = p.coords.accuracy ?? 20;
+        const dead = Math.min(25, Math.max(8, acc * 0.4));
+        if (haversineM(this.current, next) < dead) return;
+        this.current = next;
         if (!this.adminOverride) this.emit();
       },
       () => { /* keep last known */ },

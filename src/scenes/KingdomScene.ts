@@ -341,7 +341,10 @@ export class KingdomScene extends Phaser.Scene {
         c.add(this.add.image(sx, sy, `spr_job_${hero.job}`).setOrigin(0.5, 1).setScale(0.5));
       });
       const hit = this.add.rectangle(px + w / 2, py + hgt / 2, w, hgt, 0, 0).setInteractive();
-      hit.on('pointerdown', () => { if (this.mode === 'view') this.openBuilding(b); });
+      // open on a clean tap only — dragging across a building keeps panning
+      hit.on('pointerup', (p: Phaser.Input.Pointer) => {
+        if (this.mode === 'view' && !this.panMoved && p.getDistance() < 12) this.openBuilding(b);
+      });
       c.add(hit);
       c.setDepth(py + hgt);
       this.spriteLayer.add(c);
